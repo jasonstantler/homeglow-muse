@@ -33,7 +33,7 @@ os.environ.setdefault("MUSEGADGET_STATE_DIR", os.path.join(DATA, "musegadget"))
 os.environ.setdefault("MUSEGADGET_SOCKET", "/run/musegadget/musegadget.sock")
 INGRESS_PEERS = {"172.30.32.2", "127.0.0.1", "::1"}   # Home Assistant's ingress proxy (and local tests)
 PAIR_HELPER = os.environ.get("MUSE_LINK_PAIR_HELPER", os.path.join(HERE, "pair_helper.py"))
-VERSION = "1.2.0"
+VERSION = "1.2.1"
 CAP_NET_ADMIN, CAP_NET_RAW = 12, 13
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -180,7 +180,8 @@ class Pairing:
         """Start the broker now, while this process still has the permission it hands down."""
         self.broker = await asyncio.create_subprocess_exec(
             sys.executable, PAIR_HELPER, "--broker",
-            stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=None, env=dict(os.environ),
+            stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=None,
+            env={k: v for k, v in os.environ.items() if k not in ("SUPERVISOR_TOKEN", "HASSIO_TOKEN")},
         )
         asyncio.ensure_future(self._follow(self.broker))
 
@@ -319,9 +320,22 @@ def read_move_code(text: str) -> tuple[str, dict]:
     return mac, pairing
 
 
+def supervisor_token() -> str:
+    """The Supervisor API token. The base image's s6 init starts this program with a
+    cleared environment and keeps the container's original one in a folder."""
+    token = os.environ.get("SUPERVISOR_TOKEN") or ""
+    if not token:
+        try:
+            with open("/run/s6/container_environment/SUPERVISOR_TOKEN", encoding="utf-8") as handle:
+                token = handle.read().strip()
+        except OSError:
+            pass
+    return token
+
+
 def supervisor_get(path: str, method: str = "GET") -> dict:
     """Call Home Assistant's Supervisor API (blocking)."""
-    token = os.environ.get("SUPERVISOR_TOKEN")
+    token = supervisor_token()
     if not token:
         raise RuntimeError("not running under the Supervisor")
     req = urllib.request.Request("http://supervisor" + path, method=method,
@@ -340,7 +354,7 @@ def restart_self() -> None:
     log.info("restarting Muse Link to use the moved pairing")
     for handler in logging.getLogger().handlers:
         handler.flush()
-    if os.environ.get("SUPERVISOR_TOKEN"):
+    if supervisor_token():
         try:
             supervisor_get("/addons/self/restart", "POST")
             return
@@ -487,7 +501,7 @@ async def main() -> None:
         ui_host = str(info.get("ip_address") or ui_host)
     except Exception as exc:
         log.info("couldn't read the ingress address from the Supervisor (%s); using defaults", exc)
-    ui_port = ui_port or 8099
+    ui_port = ui_port or 8792  # ingress_port in config.yaml
 
     loop = asyncio.get_running_loop()
 

@@ -1,5 +1,5 @@
 name: Muse Link
-version: "1.2.0"
+version: "1.2.1"
 slug: muse_link
 description: Talk or type to your Muse from a HomeGlow wall display.
 url: https://github.com/jasonstantler/homeglow-muse
@@ -20,7 +20,7 @@ host_dbus: true
 # Lets the setup page read its ingress address and this machine's address.
 hassio_api: true
 ingress: true
-ingress_port: 0
+ingress_port: 8792
 panel_icon: mdi:creation
 panel_title: Muse Link
 options:

@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.2.1
+
+- Fix: the Muse Link page could fail to open, and it couldn't show this machine's address. The add-on couldn't see Home Assistant's Supervisor token, because the base image starts it with a cleared environment. It now reads the token where the base image keeps it, and the page uses a fixed port (8792).
+
 ## 1.2.0
 
 - **Pairing works with Android phones.** While the pairing window is open, Muse Link borrows the Bluetooth adapter and runs its own Bluetooth (Google's Bumble) with the packet size the Muse Android app needs. Home Assistant OS's own Bluetooth uses larger packets, which made the Android app hang up after Continue. The adapter goes back to Home Assistant as soon as pairing ends.
