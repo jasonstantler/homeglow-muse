@@ -1,0 +1,27 @@
+name: Muse Link
+version: "1.0.0"
+slug: muse_link
+description: Talk or type to your Muse from a HomeGlow wall display.
+url: https://github.com/jasonstantler/homeglow-muse
+arch:
+  - aarch64
+  - amd64
+startup: application
+boot: auto
+init: false
+# Bluetooth (for pairing with the Muse app) goes through the host's BlueZ over D-Bus.
+host_dbus: true
+# Lets the setup page read which port Home Assistant gave the wall card.
+hassio_api: true
+ingress: true
+ingress_port: 8099
+panel_icon: mdi:creation
+panel_title: Muse Link
+ports:
+  8791/tcp: 8791
+ports_description:
+  8791/tcp: The address the HomeGlow Muse card connects to
+options:
+  sdk_token: ""
+schema:
+  sdk_token: password?

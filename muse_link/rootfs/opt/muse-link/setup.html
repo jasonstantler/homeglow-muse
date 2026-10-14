@@ -1,0 +1,197 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Muse Link</title>
+<style>
+/* One narrow column of cards: status, pairing, and what to paste into HomeGlow. */
+:root{
+  --bg:#F4F3EF; --card:#FFFFFF; --ink:#1E2420; --muted:#5F665F; --line:#E2E0D9;
+  --acc:#4F7A5E; --acc-ink:#FFFFFF; --soft:#E7EFE9; --ok:#1F7A3D; --okbg:#E3F2E7; --warn:#A04A12; --warnbg:#FBEADF;
+  --honey:#D79A4E; --tide:#5C9AA6;
+  --mono:ui-monospace,"Cascadia Mono","Segoe UI Mono",Consolas,monospace;
+}
+@media (prefers-color-scheme:dark){:root{
+  --bg:#18191A; --card:#232526; --ink:#ECEDEA; --muted:#A8ADA8; --line:#35383A;
+  --acc:#7FB08F; --acc-ink:#102016; --soft:#253229; --ok:#7DD89A; --okbg:#1E3326; --warn:#F2A06C; --warnbg:#3A2619;
+  color-scheme:dark}}
+*{box-sizing:border-box}
+html,body{margin:0}
+body{background:var(--bg);color:var(--ink);font:15px/1.5 Roboto,"Segoe UI",system-ui,-apple-system,sans-serif;-webkit-font-smoothing:antialiased}
+main{max-width:640px;margin:0 auto;padding-block:24px 48px;padding-inline:16px;display:flex;flex-direction:column;gap:16px}
+header{display:flex;align-items:center;gap:14px}
+.orb{flex:none;width:44px;height:44px;border-radius:50%;
+  background:radial-gradient(circle at 32% 26%,rgba(255,255,255,.6) 0 8%,transparent 34%),conic-gradient(from 200deg,var(--acc),var(--tide),var(--honey),var(--acc));
+  box-shadow:0 4px 14px rgba(79,122,94,.3)}
+h1{margin:0;font-size:1.35rem;font-weight:700;letter-spacing:-.01em}
+.sub{margin:0;color:var(--muted);font-size:.88rem}
+.card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:18px;display:flex;flex-direction:column;gap:12px}
+.card h2{margin:0;font-size:1.02rem;font-weight:650}
+.card p{margin:0}
+.muted{color:var(--muted)}
+.status{display:flex;align-items:center;gap:12px}
+.dot{flex:none;width:12px;height:12px;border-radius:50%;background:var(--muted)}
+.status.ok .dot{background:var(--ok);box-shadow:0 0 0 4px var(--okbg)}
+.status.wait .dot{background:var(--honey);animation:pulse 1.2s ease-in-out infinite}
+.status.warn .dot{background:var(--warn);box-shadow:0 0 0 4px var(--warnbg)}
+@keyframes pulse{50%{opacity:.35}}
+.status b{font-size:1.05rem}
+ol{margin:0;padding-left:1.3em;display:flex;flex-direction:column;gap:6px}
+.btns{display:flex;flex-wrap:wrap;gap:8px}
+button{font:inherit;cursor:pointer;border:0;border-radius:10px;padding:10px 16px;font-weight:600}
+.primary{background:var(--acc);color:var(--acc-ink)}
+.quiet{background:var(--soft);color:var(--ink)}
+button:focus-visible{outline:2px solid var(--acc);outline-offset:2px}
+button:disabled{opacity:.5;cursor:default}
+.device{display:flex;flex-direction:column;align-items:center;gap:4px;padding:16px;border-radius:12px;background:var(--soft);text-align:center}
+.device .name{font:700 1.4rem/1.2 var(--mono);letter-spacing:.02em}
+.device .time{font-variant-numeric:tabular-nums;color:var(--muted);font-size:.88rem}
+.field{display:flex;flex-direction:column;gap:6px}
+.field label{font-size:.78rem;font-weight:650;letter-spacing:.05em;text-transform:uppercase;color:var(--muted)}
+.copyrow{display:flex;gap:8px;min-width:0}
+.copyrow code{flex:1;min-width:0;padding:10px 12px;border-radius:10px;background:var(--soft);font:600 .95rem/1.3 var(--mono);overflow-x:auto;white-space:nowrap;user-select:all}
+.note{padding:10px 12px;border-radius:10px;background:var(--warnbg);color:var(--warn);font-weight:550}
+.confirm{display:none;gap:8px;align-items:center;flex-wrap:wrap}
+.confirm.show{display:flex}
+footer{color:var(--muted);font-size:.84rem;padding-inline:4px}
+a{color:var(--acc)}
+[hidden]{display:none !important}
+</style>
+</head>
+<body>
+<main>
+  <header><div class="orb" aria-hidden="true"></div><div><h1>Muse Link</h1><p class="sub">Talk or type to your Muse from a HomeGlow wall display.</p></div></header>
+
+  <section class="card" id="statusCard" aria-live="polite">
+    <div class="status" id="status"><span class="dot"></span><b id="statusText">Checking…</b></div>
+    <p class="muted" id="statusMore"></p>
+  </section>
+
+  <section class="card" id="tokenCard" hidden>
+    <h2>Add your Muse SDK token</h2>
+    <ol>
+      <li>Get a token at <a href="https://gadgets.muse.ai/settings/sdk-tokens" target="_blank" rel="noopener">gadgets.muse.ai</a> (Account, then SDK tokens). It starts with <code>mgst_</code>.</li>
+      <li>Open this add-on's <b>Configuration</b> tab, paste it into <b>Muse SDK token</b>, and click <b>Save</b>.</li>
+      <li>Restart the add-on, then come back here.</li>
+    </ol>
+  </section>
+
+  <section class="card" id="pairCard" hidden>
+    <h2>Pair with the Muse app</h2>
+    <div id="pairIdle">
+      <ol>
+        <li>In the Muse app, turn on <b>Settings → Devices → Developer mode</b>.</li>
+        <li>Click <b>Start pairing</b> below, then follow the steps that appear.</li>
+      </ol>
+    </div>
+    <div id="pairOpen" hidden>
+      <div class="device"><span class="muted">In the Muse app, add the device named</span><span class="name" id="devName"></span><span class="time" id="devTime"></span></div>
+      <ol>
+        <li>Tap <b>Settings → Devices → Add Device</b> (the <b>+</b> at the top right).</li>
+        <li>Pick the device named above.</li>
+        <li>Muse says it's a community device. Tap <b>Continue</b>.</li>
+        <li>When it asks for Wi-Fi, pick the network it shows. No password is needed.</li>
+      </ol>
+    </div>
+    <p class="note" id="pairNote" hidden></p>
+    <div class="btns">
+      <button class="primary" id="pairBtn" type="button">Start pairing</button>
+      <button class="quiet" id="cancelBtn" type="button" hidden>Cancel</button>
+    </div>
+  </section>
+
+  <section class="card" id="wallCard">
+    <h2>Connect the HomeGlow card</h2>
+    <p class="muted">In HomeGlow, upload <b>muse-wall.html</b> (Admin → Plugins), then paste these two into the Muse card's Plugin Options.</p>
+    <div class="field"><label for="addr">Bridge address</label>
+      <div class="copyrow"><code id="addr">…</code><button class="quiet" type="button" data-copy="addr">Copy</button></div>
+      <p class="muted" id="addrNote" hidden>If HomeGlow can't reach it, use your Home Assistant's address on your home network in place of the part before the colon.</p>
+    </div>
+    <div class="field"><label for="key">Wall key</label>
+      <div class="copyrow"><code id="key">••••••••••••••••</code><button class="quiet" type="button" id="showKey">Show</button><button class="quiet" type="button" data-copy="key">Copy</button></div>
+    </div>
+    <div class="btns"><button class="quiet" type="button" id="newKey">Make a new key</button></div>
+    <div class="confirm" id="confirmNew"><span>The card will stop working until you paste the new key.</span><button class="primary" type="button" id="newKeyYes">Make a new key</button><button class="quiet" type="button" id="newKeyNo">Keep this one</button></div>
+    <p class="muted" id="copied" hidden>Copied.</p>
+  </section>
+
+  <footer>Muse can't run commands or change files on this Home Assistant machine. Anyone on your home network with the wall key can send requests to your Muse, so keep it private. To unpair, remove the device in the Muse app. <span id="ver"></span></footer>
+</main>
+<script>
+(function(){
+  'use strict';
+  var st = null, showKey = false, timer = null;
+  function $(id){ return document.getElementById(id); }
+  function call(method, path){
+    return fetch(path, {method: method, cache: 'no-store'}).then(function(r){
+      return r.json().then(function(d){ if (!r.ok) throw new Error(d.error || 'That didn’t work.'); return d; });
+    });
+  }
+  function clock(s){ return Math.floor(s / 60) + ':' + ('0' + (s % 60)).slice(-2); }
+  function localHost(){
+    var h = location.hostname;
+    return /^(\d+\.){3}\d+$/.test(h) || /\.local$/.test(h) || h === 'homeassistant' ? h : '';
+  }
+  function render(){
+    if (!st) return;
+    var p = st.pairing, s = $('status'), text, more = '', cls = '';
+    if (st.token !== 'ok'){ text = st.token === 'missing' ? 'Needs your Muse SDK token' : 'The SDK token isn’t valid'; cls = 'warn'; more = 'See the steps below.'; }
+    else if (st.connected){ text = 'Connected to your Muse'; cls = 'ok'; more = 'The HomeGlow card can talk to Muse now.'; }
+    else if (st.paired){ text = 'Paired. Connecting to your Muse…'; cls = 'wait'; more = 'This can take up to a minute. If it stays here, check the add-on’s Log tab.'; }
+    else if (p.state === 'open' || p.state === 'starting'){ text = 'Waiting for the Muse app…'; cls = 'wait'; }
+    else { text = 'Not paired yet'; more = 'Pair once with the Muse app. After that it reconnects on its own, even after restarts.'; }
+    s.className = 'status ' + cls; $('statusText').textContent = text; $('statusMore').textContent = more;
+
+    $('tokenCard').hidden = st.token === 'ok';
+    var showPair = st.token === 'ok' && !st.paired;
+    $('pairCard').hidden = !showPair;
+    var open = p.state === 'open';
+    $('pairIdle').hidden = open; $('pairOpen').hidden = !open;
+    $('devName').textContent = p.name || '';
+    $('devTime').textContent = open ? 'Open for ' + clock(p.seconds_left) : '';
+    $('pairBtn').hidden = open; $('pairBtn').disabled = p.state === 'starting';
+    $('pairBtn').textContent = p.state === 'starting' ? 'Opening Bluetooth…' : (p.state === 'closed' || p.state === 'failed') ? 'Try again' : 'Start pairing';
+    $('cancelBtn').hidden = !open;
+    var note = p.state === 'failed' ? p.problem : p.state === 'closed' ? 'Pairing closed before the Muse app finished. Try again.' : '';
+    $('pairNote').hidden = !note; $('pairNote').textContent = note;
+
+    var host = st.ip || localHost();
+    $('addr').textContent = 'http://' + (host || 'HOME-ASSISTANT-ADDRESS') + ':' + st.port;
+    $('addrNote').hidden = !!st.ip;
+    $('key').textContent = showKey ? st.key : '•'.repeat(16);
+    $('showKey').textContent = showKey ? 'Hide' : 'Show';
+    $('ver').textContent = 'Version ' + st.version + '.';
+    clearTimeout(timer);
+    timer = setTimeout(refresh, (p.state === 'open' || p.state === 'starting' || (st.paired && !st.connected)) ? 1500 : 5000);
+  }
+  function refresh(){ call('GET', 'api/state').then(function(d){ st = d; render(); }, function(){ clearTimeout(timer); timer = setTimeout(refresh, 5000); }); }
+  function act(path){ return call('POST', path).then(function(d){ st = d; render(); }, function(e){ $('pairNote').hidden = false; $('pairNote').textContent = e.message; }); }
+  function copy(text){
+    function done(){ $('copied').hidden = false; setTimeout(function(){ $('copied').hidden = true; }, 1600); }
+    if (navigator.clipboard && window.isSecureContext) return navigator.clipboard.writeText(text).then(done, fallback);
+    fallback();
+    function fallback(){
+      var t = document.createElement('textarea'); t.value = text; t.style.position = 'fixed'; t.style.opacity = '0';
+      document.body.appendChild(t); t.select();
+      try { document.execCommand('copy'); done(); } catch(e){}
+      document.body.removeChild(t);
+    }
+  }
+  $('pairBtn').addEventListener('click', function(){ act('api/pair'); });
+  $('cancelBtn').addEventListener('click', function(){ act('api/pair/cancel'); });
+  $('showKey').addEventListener('click', function(){ showKey = !showKey; render(); });
+  $('newKey').addEventListener('click', function(){ $('confirmNew').classList.add('show'); });
+  $('newKeyNo').addEventListener('click', function(){ $('confirmNew').classList.remove('show'); });
+  $('newKeyYes').addEventListener('click', function(){ $('confirmNew').classList.remove('show'); showKey = true; act('api/new-key'); });
+  Array.prototype.forEach.call(document.querySelectorAll('[data-copy]'), function(b){
+    b.addEventListener('click', function(){
+      if (!st) return;
+      copy(b.dataset.copy === 'key' ? st.key : $('addr').textContent);
+    });
+  });
+  refresh();
+})();
+</script>
+</body>
+</html>

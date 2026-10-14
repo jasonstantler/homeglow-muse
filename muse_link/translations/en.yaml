@@ -1,0 +1,8 @@
+configuration:
+  sdk_token:
+    name: Muse SDK token
+    description: >-
+      From gadgets.muse.ai (Account, then SDK tokens). It starts with mgst_.
+      Restart the add-on after changing it.
+network:
+  8791/tcp: The address the HomeGlow Muse card connects to.

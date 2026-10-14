@@ -1,0 +1,641 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Muse</title>
+<script type="application/json" id="homeglow-manifest">
+{
+  "manifestVersion": 1,
+  "id": "muse-wall",
+  "name": "Muse",
+  "version": "1.2.0",
+  "description": "Version 1.2. Talk or type to your Muse from the wall. Answers show on the card and can be read out loud. Needs the Muse Link add-on for Home Assistant.",
+  "category": "family-hub",
+  "apiVersion": "v1",
+  "settings": [
+    { "key": "bridgeUrl", "label": "Bridge address (from the Muse Link page in Home Assistant, like http://192.168.1.20:8791)", "type": "string", "default": "" },
+    { "key": "bridgeKey", "label": "Wall key (from the Muse Link page in Home Assistant)", "type": "string", "default": "" },
+    { "key": "button1", "label": "Quick button 1 (Label = what to send; end the label with … to finish typing it yourself)", "type": "string", "default": "What's on today? = What's on the family calendar today?" },
+    { "key": "button2", "label": "Quick button 2", "type": "string", "default": "Add to grocery list… = Add to the grocery list:" },
+    { "key": "button3", "label": "Quick button 3", "type": "string", "default": "Remind me… = Remind me to" },
+    { "key": "button4", "label": "Quick button 4", "type": "string", "default": "Morning brief = Give me the morning brief." },
+    { "key": "button5", "label": "Quick button 5", "type": "string", "default": "" },
+    { "key": "button6", "label": "Quick button 6", "type": "string", "default": "" },
+    { "key": "voice", "label": "Read answers out loud on this screen", "type": "boolean", "default": true, "scope": "device" },
+    { "key": "voiceName", "label": "Voice to read with (part of its name, like Aria or Guy; blank picks the most natural one)", "type": "string", "default": "", "scope": "device" }
+  ]
+}
+</script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Figtree:wght@500;600;700;800&family=Fraunces:opsz,wght@9..144,400;9..144,500&display=swap">
+<style>
+/* Layout: header strip, the conversation in the middle, a dock at the bottom with the voice orb,
+   quick buttons and the text box. Small tiles fold the text box into a sheet. */
+:root{
+  --ink:var(--text-color,#26302A);
+  --acc:var(--accent,#4F7A5E);
+  --honey:#D79A4E;
+  --tide:#5C9AA6;
+  --surface:#FBFAF6;
+  --muted:color-mix(in srgb, var(--ink) 62%, transparent);
+  --soft:color-mix(in srgb, var(--acc) 10%, transparent);
+  --edge:color-mix(in srgb, var(--acc) 22%, transparent);
+  --warn:#B4602A;
+  --ui:"Figtree",system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+  --voice:"Fraunces",Georgia,"Times New Roman",serif;
+}
+:root[data-theme="dark"]{--ink:var(--text-color,#ECE7DD);--acc:var(--accent,#86B595);--surface:#23221E;--honey:#E3AE68;--tide:#79B4BF;--warn:#E08A52;color-scheme:dark}
+@property --spin{syntax:"<angle>";inherits:false;initial-value:0deg}
+
+*{box-sizing:border-box}
+/* HomeGlow's /index.css styles its own page's body (bottom padding for its dock, its font and line
+   spacing). Undo that here so the widget fills its frame. */
+html,body{margin:0;padding:0;height:100%;min-height:0;line-height:normal;font-family:var(--ui)}
+html[data-theme] body,body{background:transparent !important;background-image:none !important}
+body{color:var(--ink);-webkit-font-smoothing:antialiased;overflow:hidden}
+button,input{font:inherit;color:inherit}
+button{appearance:none;-webkit-appearance:none;border:0;margin:0;background:none;cursor:pointer;-webkit-tap-highlight-color:transparent;touch-action:manipulation;-webkit-user-select:none;user-select:none}
+button:focus-visible,input:focus-visible{outline:3px solid var(--acc);outline-offset:2px}
+
+#app{position:relative;isolation:isolate;height:100%;overflow:hidden;border-radius:18px;container-type:size;
+  display:flex;flex-direction:column;gap:clamp(6px,2cqh,12px);padding:clamp(10px,3cqh,16px) clamp(10px,3cqw,16px)}
+/* Aurora: three soft color pools that drift while Muse is busy */
+#app::before{content:"";position:absolute;inset:-30%;z-index:-1;pointer-events:none;
+  background:
+    radial-gradient(40% 35% at 18% 12%, color-mix(in srgb, var(--acc) 26%, transparent), transparent 70%),
+    radial-gradient(38% 32% at 88% 22%, color-mix(in srgb, var(--honey) 22%, transparent), transparent 70%),
+    radial-gradient(45% 40% at 70% 100%, color-mix(in srgb, var(--tide) 18%, transparent), transparent 70%);
+  transition:transform 1.2s ease}
+.busy#app::before,.listening#app::before{animation:drift 9s ease-in-out infinite alternate}
+@keyframes drift{to{transform:translate(4%,6%) rotate(8deg) scale(1.05)}}
+
+/* Header */
+.head{display:flex;align-items:center;gap:10px;min-width:0}
+.mark{font-weight:800;font-size:clamp(1rem,5.6cqh,1.3rem);letter-spacing:-.01em}
+.mark i{font-style:normal;background:linear-gradient(100deg,var(--acc),var(--honey));-webkit-background-clip:text;background-clip:text;color:transparent}
+.state{flex:1;min-width:0;display:flex;align-items:center;gap:7px;font-weight:600;font-size:clamp(.72rem,3.7cqh,.86rem);color:var(--muted);white-space:nowrap;overflow:hidden}
+.state b{flex:none;width:8px;height:8px;border-radius:50%;background:var(--acc);box-shadow:0 0 0 0 color-mix(in srgb, var(--acc) 50%, transparent)}
+.state span{overflow:hidden;text-overflow:ellipsis}
+.busy .state,.listening .state,.speaking .state{color:var(--ink)}
+.busy .state b,.listening .state b,.speaking .state b{animation:ping 1.2s ease-out infinite}
+.listening .state b{background:var(--honey)}
+.state.off b{background:color-mix(in srgb, var(--ink) 35%, transparent)}
+.state.warn{color:var(--warn)}
+.state.warn b{background:var(--warn)}
+@keyframes ping{to{box-shadow:0 0 0 8px transparent}}
+.voice-toggle{flex:none;display:flex;align-items:center;gap:6px;padding:7px 12px;border-radius:999px;font-weight:700;font-size:clamp(.72rem,3.6cqh,.84rem);
+  background:color-mix(in srgb, var(--surface) 70%, transparent);border:1px solid var(--edge)}
+.voice-toggle svg{width:1.2em;height:1.2em;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
+.voice-toggle[aria-pressed="true"]{background:var(--acc);border-color:var(--acc);color:#fff}
+.voice-toggle .on{display:none}
+.voice-toggle[aria-pressed="true"] .on{display:inline}
+.voice-toggle[aria-pressed="true"] .off{display:none}
+
+/* Conversation */
+.talk{position:relative;flex:1;min-height:0;overflow-y:auto;display:flex;flex-direction:column;gap:12px;padding:2px 2px 6px;scrollbar-width:thin}
+.turn{display:flex;flex-direction:column;gap:8px;transition:opacity .3s}
+.turn.old{opacity:.5}
+.turn.old .reply{font-size:clamp(.82rem,4cqh,.98rem)}
+.you{align-self:flex-end;max-width:86%;display:flex;align-items:center;gap:7px;padding:7px 12px;border-radius:16px 16px 5px 16px;
+  background:color-mix(in srgb, var(--acc) 16%, var(--surface));border:1px solid var(--edge);font-weight:600;font-size:clamp(.78rem,3.9cqh,.92rem);line-height:1.3}
+.you svg{flex:none;width:1em;height:1em;fill:var(--acc)}
+.you .len{font-variant-numeric:tabular-nums;color:var(--muted);font-weight:600}
+.reply{font-family:var(--voice);font-weight:400;font-size:clamp(.95rem,5.2cqh,1.28rem);line-height:1.42;letter-spacing:-.003em;font-variation-settings:"opsz" 30;
+  white-space:pre-wrap;overflow-wrap:anywhere}
+.reply.typing::after{content:"";display:inline-block;width:.45em;height:.45em;margin-left:.2em;border-radius:50%;background:var(--honey);vertical-align:middle;animation:bead .9s ease-in-out infinite}
+.reply.waiting{color:var(--muted);font-style:italic}
+@keyframes bead{50%{transform:scale(.5);opacity:.4}}
+.speaking .turn:last-child .reply{text-decoration:underline;text-decoration-color:color-mix(in srgb, var(--acc) 35%, transparent);text-decoration-thickness:2px;text-underline-offset:5px}
+.answer{display:flex;gap:8px;flex-wrap:wrap}
+.answer button{min-width:6.5em;padding:clamp(8px,2.6cqh,12px) 18px;border-radius:14px;font-weight:800;font-size:clamp(.85rem,4.2cqh,1rem);border:1.5px solid var(--acc)}
+.answer .yes{background:var(--acc);color:#fff}
+.flag{display:flex;align-items:center;gap:8px;width:fit-content;padding:7px 12px;border-radius:12px;font-weight:700;font-size:clamp(.74rem,3.6cqh,.86rem);
+  background:color-mix(in srgb, var(--warn) 13%, transparent);color:var(--warn)}
+.flag svg{width:1.1em;height:1.1em;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
+.oops{color:var(--warn);font-weight:650;font-size:clamp(.8rem,4cqh,.95rem)}
+
+.hello{margin:auto;display:flex;flex-direction:column;align-items:center;gap:6px;text-align:center;max-width:26em}
+.hello h2{margin:0;font-family:var(--voice);font-weight:400;font-size:clamp(1.05rem,6.4cqh,1.5rem);font-variation-settings:"opsz" 60}
+.hello p{margin:0;color:var(--muted);font-weight:600;font-size:clamp(.74rem,3.8cqh,.88rem);line-height:1.4}
+
+/* Dock */
+.dock{flex:none;display:flex;flex-direction:column;gap:clamp(6px,2cqh,10px)}
+.chips{display:flex;gap:6px;overflow-x:auto;scrollbar-width:none;mask-image:linear-gradient(90deg,#000 90%,transparent)}
+.chips::-webkit-scrollbar{display:none}
+#chips1:empty,#chips2:empty{display:none}
+.chips button{flex:none;padding:clamp(6px,2cqh,9px) 13px;border-radius:999px;font-weight:700;font-size:clamp(.72rem,3.6cqh,.86rem);white-space:nowrap;
+  background:color-mix(in srgb, var(--surface) 75%, transparent);border:1px solid var(--edge)}
+.chips button:active{background:var(--soft)}
+.bar{display:flex;align-items:center;gap:10px}
+.field{flex:1;min-width:0;display:flex;align-items:center;gap:6px;padding:4px 4px 4px 16px;border-radius:999px;
+  background:color-mix(in srgb, var(--surface) 88%, transparent);border:1.5px solid var(--edge);box-shadow:0 4px 14px color-mix(in srgb, var(--acc) 10%, transparent)}
+.field:focus-within{border-color:var(--acc)}
+.field input{flex:1;min-width:0;border:0;background:none;padding:clamp(7px,2.4cqh,11px) 0;font-weight:600;font-size:clamp(.85rem,4.2cqh,1rem);outline:none}
+.field input::placeholder{color:var(--muted);font-weight:500}
+.send{flex:none;width:clamp(34px,11cqh,44px);aspect-ratio:1;border-radius:50%;background:var(--acc);color:#fff;display:grid;place-items:center}
+.send svg{width:46%;height:46%;fill:currentColor}
+.send:disabled{opacity:.35;cursor:default}
+
+/* The orb: tap to talk. Its look follows what Muse is doing. */
+.orb{--s:clamp(46px,15cqh,64px);position:relative;flex:none;width:var(--s);aspect-ratio:1;border-radius:50%;color:#fff}
+.orb .ball{position:absolute;inset:0;border-radius:50%;
+  background:radial-gradient(circle at 32% 26%, rgba(255,255,255,.55) 0 7%, transparent 32%),
+             conic-gradient(from var(--spin), color-mix(in srgb, var(--acc) 85%, #fff), color-mix(in srgb, var(--tide) 85%, #fff), color-mix(in srgb, var(--honey) 90%, #fff), color-mix(in srgb, var(--acc) 85%, #fff));
+  box-shadow:0 6px 20px color-mix(in srgb, var(--acc) 40%, transparent), 0 0 0 4px color-mix(in srgb, var(--acc) 12%, transparent), inset 0 -6px 14px rgba(0,0,0,.14), inset 0 4px 10px rgba(255,255,255,.35);
+  animation:breathe 4.5s ease-in-out infinite}
+.orb::before,.orb::after{content:"";position:absolute;inset:0;border-radius:50%;border:2px solid color-mix(in srgb, var(--honey) 70%, transparent);opacity:0;pointer-events:none}
+.orb svg{position:absolute;left:26%;top:26%;width:48%;height:48%;fill:#fff;filter:drop-shadow(0 1px 2px rgba(0,0,0,.25))}
+.orb .stopsq{display:none}
+@keyframes breathe{50%{transform:scale(.95)}}
+@keyframes spin{to{--spin:360deg}}
+@keyframes ring{from{transform:scale(1);opacity:.9}to{transform:scale(1.7);opacity:0}}
+.busy .orb .ball{animation:spin 2.2s linear infinite}
+.listening .orb .ball{animation:spin 6s linear infinite;transform:scale(calc(1 + var(--lvl,0) * .14))}
+.listening .orb::before,.speaking .orb::before{animation:ring 1.6s ease-out infinite}
+.listening .orb::after,.speaking .orb::after{animation:ring 1.6s ease-out .8s infinite}
+.speaking .orb .ball{animation:spin 5s linear infinite,breathe 1s ease-in-out infinite}
+.listening .orb .mic,.speaking .orb .mic{display:none}
+.listening .orb .stopsq,.speaking .orb .stopsq{display:block}
+.orb:disabled{cursor:default}
+
+/* Small tiles: the latest answer, quick buttons, the orb and a Type button */
+.type-btn{display:none;flex:1;min-height:clamp(40px,14cqh,52px);border-radius:999px;font-weight:800;font-size:clamp(.85rem,4.4cqh,1rem);
+  background:color-mix(in srgb, var(--surface) 85%, transparent);border:1.5px solid var(--edge)}
+.sheet{position:absolute;inset:0;z-index:5;padding:clamp(10px,3cqh,16px);display:none;flex-direction:column;gap:10px;
+  background:color-mix(in srgb, var(--surface) 96%, var(--acc));border-radius:18px}
+.sheet.open{display:flex}
+.sheet .top{display:flex;justify-content:space-between;align-items:center;font-weight:800}
+.sheet .top button{padding:6px 14px;border-radius:999px;background:var(--soft);font-weight:700}
+.sheet .chips{flex-wrap:wrap;overflow:visible;mask-image:none}
+@container (max-height: 300px){
+  .talk .turn:not(:last-child){display:none}
+  .talk .you{display:none}
+  #app > .dock .field{display:none}
+  .type-btn{display:block}
+}
+@container (max-width: 300px){
+  .voice-toggle .lbl{display:none}
+  #app > .dock .chips{display:none}
+}
+@media (prefers-reduced-motion:reduce){*{animation:none !important;transition:none !important}}
+</style>
+</head>
+<body>
+<main id="app"></main>
+<script src="/plugin-sdk/v1.js"></script>
+<script>
+(function(){
+  'use strict';
+  var MANIFEST = JSON.parse(document.getElementById('homeglow-manifest').textContent);
+  var DEFAULTS = {};
+  MANIFEST.settings.forEach(function(s){ DEFAULTS[s.key] = s.default; });
+  var live = !!(window.__HOMEGLOW_PLUGIN__ && window.HomeGlow && window.HomeGlow.settings);
+  var settings = Object.assign({}, DEFAULTS);
+  function clean(s){ return String(s == null ? '' : s).trim(); }
+  function esc(s){ return String(s == null ? '' : s).replace(/[&<>"']/g, function(c){ return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]; }); }
+
+  // ---------- Icons ----------
+  var MIC = '<svg class="mic" viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M6 11a6 6 0 0 0 12 0h-1.8a4.2 4.2 0 0 1-8.4 0zM11.1 17.9h1.8V21h-1.8z"/></svg>';
+  var STOP = '<svg class="stopsq" viewBox="0 0 24 24" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="2.5"/></svg>';
+  var SEND = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 20.5 21 12 4 3.5l2 7.2 8 1.3-8 1.3z"/></svg>';
+  var SPK = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9.5h3.5L12 5.5v13l-4.5-4H4z"/><path class="on" d="M15.5 9a4 4 0 0 1 0 6M18 6.5a7.5 7.5 0 0 1 0 11"/><path class="off" d="M16 10l4 4M20 10l-4 4"/></svg>';
+  var MICS = '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M6 11a6 6 0 0 0 12 0h-1.8a4.2 4.2 0 0 1-8.4 0zM11.1 17.9h1.8V21h-1.8z"/></svg>';
+  var PHONE = '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="7" y="2.5" width="10" height="19" rx="2.5"/><path d="M11 18.5h2"/></svg>';
+
+  // ---------- Quick buttons: "Label = what to send" ----------
+  function parseButton(raw){
+    raw = clean(raw); if (!raw) return null;
+    var i = raw.indexOf('='), label = raw, request = '';
+    if (i >= 0){ label = clean(raw.slice(0, i)); request = clean(raw.slice(i + 1)); }
+    var typing = /(…|\.\.\.)$/.test(label);
+    if (!request) request = clean(label.replace(/(…|\.\.\.)$/, ''));
+    if (!label) label = request;
+    if (!label || !request) return null;
+    return typing ? {label: label, type: request + ' '} : {label: label, send: request};
+  }
+  function buttons(){
+    var out = [];
+    for (var n = 1; n <= 6; n++){ var b = parseButton(settings['button' + n]); if (b) out.push(b); }
+    return out;
+  }
+
+  // ---------- Talking to the bridge ----------
+  function bridge(){
+    function base(){ return clean(settings.bridgeUrl).replace(/\/+$/, ''); }
+    function key(){ return clean(settings.bridgeKey); }
+    function call(method, path, body, type){
+      var headers = {'X-Wall-Key': key()};
+      if (type) headers['Content-Type'] = type;
+      return fetch(base() + path, {method: method, headers: headers, body: body, cache: 'no-store'}).then(function(r){
+        return r.json().catch(function(){ return {}; }).then(function(d){
+          if (!r.ok){ var e = new Error(d.error || ('The bridge answered with error ' + r.status + '.')); e.status = r.status; throw e; }
+          return d;
+        });
+      }, function(){ throw new Error("Can't reach Muse Link at " + base() + '. Is the add-on running?'); });
+    }
+    return {
+      ready: function(){ return /^https?:\/\/\S+$/.test(base()) && key().length >= 16; },
+      status: function(){ return call('GET', '/status'); },
+      askText: function(text, speak){ return call('POST', '/ask', JSON.stringify({text: text, speak: !!speak}), 'application/json').then(function(d){ return d.turn; }); },
+      askVoice: function(wav, speak){ return call('POST', '/ask-voice?speak=' + (speak ? 1 : 0), wav, 'audio/wav').then(function(d){ return d.turn; }); },
+      turn: function(id){ return call('GET', '/turn/' + encodeURIComponent(id)).then(function(d){ return d.turn; }); },
+      speechUrl: function(id, mid){ return base() + '/speech/' + encodeURIComponent(id) + '/' + encodeURIComponent(mid) + '?key=' + encodeURIComponent(key()); },
+      pollMs: 600
+    };
+  }
+
+  // A stand-in Muse with sample answers, for opening this file outside HomeGlow
+  function sampleBridge(){
+    var made = {}, lastAsk = null, voiceTurn = 0;
+    var VOICE = [
+      {heard: 'Find a plumber for tomorrow morning.', steps: ['Searching for plumbers', 'Checking openings'], text: 'I found two plumbers with openings tomorrow morning: Gateway Plumbing at 8:00 and Rapid Rooter at 10:30. Should I book Gateway at 8:00?',
+       yes: 'Booked Gateway Plumbing for 8:00 tomorrow and added it to the family calendar.', no: "Okay, I won't book anything."},
+      {heard: 'What will the weather be this afternoon?', steps: ['Checking the weather'], text: "It'll be sunny and 68° this afternoon, and dry until Thursday."}
+    ];
+    function answer(q){
+      var t = q.toLowerCase();
+      if (lastAsk && /^(yes|no)\b/.test(t)){ var a = lastAsk; lastAsk = null; return {steps: ['Working on it'], text: /^yes/.test(t) ? a.yes : a.no}; }
+      if (/calendar|today/.test(t)) return {steps: ['Checking your calendar'], text: 'Today you have the dentist at 3:30 and soccer practice at 6:00. Trash and recycling go out tonight.'};
+      if (/grocery/.test(t)) return {steps: ['Opening your grocery list'], text: 'Added ' + (clean(q.replace(/^.*?:\s*/, '')) || 'that') + ' to the grocery list.'};
+      if (/^remind me/.test(t)) return {steps: ['Setting a reminder'], text: "Okay. I'll remind you " + clean(q.replace(/^remind me\s*/i, '')).replace(/[.!]$/, '') + '.'};
+      if (/brief/.test(t)) return {steps: ['Checking the weather', 'Checking your calendar'], text: "Good morning. It's 54° now, heading to 68° and sunny. You have the dentist at 3:30 and soccer at 6."};
+      if (/order|buy/.test(t)) return {steps: ['Searching Walmart'], text: 'I found Bounty Select-A-Size, 12 double rolls, for $31.97. Approve the order in the Muse app and it arrives Thursday.'};
+      return {steps: ['Working on it'], text: 'This is a sample answer. Set up the bridge to talk to your Muse.'};
+    }
+    function start(a){
+      var id = Math.random().toString(16).slice(2, 14);
+      made[id] = {a: a, t0: Date.now()};
+      if (a.yes) lastAsk = a;
+      return Promise.resolve(snap(id));
+    }
+    function snap(id){
+      var x = made[id], a = x.a, el = Date.now() - x.t0, think = 700 + a.steps.length * 950;
+      var base = {id: id, heard: a.heard || '', speak: false, error: '', note: ''};
+      if (el < 400) return Object.assign(base, {state: 'sending', activity: '', replies: []});
+      if (el < think) return Object.assign(base, {state: 'working', activity: el < 700 ? 'Thinking' : a.steps[Math.min(a.steps.length - 1, Math.floor((el - 700) / 950))], replies: []});
+      var words = a.text.split(' '), n = Math.max(2, Math.floor((el - think) / 85) * 2);
+      if (n < words.length) return Object.assign(base, {state: 'answering', activity: '', replies: [{id: 'm1', text: words.slice(0, n).join(' '), done: false}]});
+      return Object.assign(base, {state: 'done', activity: '', replies: [{id: 'm1', text: a.text, done: true}]});
+    }
+    return {
+      ready: function(){ return true; },
+      status: function(){ return Promise.resolve({connected: true}); },
+      askText: function(text){ return start(answer(text)); },
+      askVoice: function(){ return start(VOICE[voiceTurn++ % VOICE.length]); },
+      turn: function(id){ return Promise.resolve(snap(id)); },
+      speechUrl: function(){ return null; },
+      pollMs: 120
+    };
+  }
+  var api = live ? bridge() : sampleBridge();
+
+  // ---------- State ----------
+  var turns = [];               // what's on the card, newest last
+  var current = null;           // the request Muse is working on
+  var listening = false, speakingNow = false, sheetOpen = false;
+  var connected = null;         // null until the first check
+  var aloud = true;
+  var problem = null;           // {text, until}
+
+  function lastTurn(){ return turns[turns.length - 1] || null; }
+  // Muse sometimes formats answers for its app (bold, lists, links); show them as plain text
+  function tidy(s){
+    return String(s || '')
+      .replace(/\[([^\]]+)\]\((?:https?:)?[^)\s]+\)/g, '$1')
+      .replace(/\*\*([^*\n]+)\*\*/g, '$1').replace(/__([^_\n]+)__/g, '$1')
+      .replace(/(^|[\s(])\*([^*\n]+)\*(?=[\s).,!?:;]|$)/g, '$1$2')
+      .replace(/`([^`\n]+)`/g, '$1')
+      .replace(/^#{1,6}\s+/gm, '')
+      .replace(/^\s*[-*+]\s+/gm, '\u2022 ')
+      .replace(/\n{3,}/g, '\n\n').trim();
+  }
+  function replyText(t){ return tidy((t.replies || []).map(function(r){ return r.text; }).join('\n\n')); }
+  function asks(t){ return t && t.state === 'done' && !t.answered && /\?\s*$/.test(replyText(t)); }
+  function needsApproval(t){ return t && t.state === 'done' && /\bapprov/i.test(replyText(t)); }
+  function mode(){ return listening ? 'listening' : current ? 'busy' : speakingNow ? 'speaking' : 'idle'; }
+  function flash(text){ problem = {text: text, until: Date.now() + 7000}; render(); setTimeout(render, 7100); }
+
+  function statusLine(){
+    var m = mode();
+    if (problem && Date.now() < problem.until) return {text: problem.text, cls: 'warn'};
+    if (m === 'listening') return {text: 'Listening… tap the orb when you’re done'};
+    if (m === 'busy') return {text: (current.activity ? current.activity + '…' : current.state === 'sending' ? 'Sending…' : current.state === 'answering' ? 'Answering…' : 'Thinking…')};
+    if (m === 'speaking') return {text: 'Speaking… tap the orb to stop'};
+    if (!api.ready()) return {text: 'Not set up yet', cls: 'off'};
+    if (connected === false) return {text: 'Muse is offline', cls: 'off'};
+    var t = lastTurn();
+    if (asks(t)) return {text: 'Waiting for your answer'};
+    if (needsApproval(t)) return {text: 'Waiting for your OK in the Muse app'};
+    return {text: 'Ready'};
+  }
+
+  // ---------- Render ----------
+  // The card is built once; each part is redrawn only when what it shows has changed,
+  // so the orb's animation, the text box and the scroll position aren't disturbed.
+  var cache = {}, built = false;
+  function region(id, html){
+    if (cache[id] === html) return false;
+    var el = document.getElementById(id); if (!el) return false;
+    el.innerHTML = html; cache[id] = html; return true;
+  }
+  function field(id){ return '<form class="field"><input id="' + id + '" autocomplete="off" enterkeyhint="send" maxlength="2000" placeholder="Ask Muse anything" aria-label="Ask Muse"><button class="send" type="submit" aria-label="Send">' + SEND + '</button></form>'; }
+  function build(){
+    document.getElementById('app').innerHTML =
+      '<div class="head" id="head"></div>' +
+      '<div class="talk" id="talk"></div>' +
+      '<div class="dock"><div id="chips1"></div><div class="bar">' +
+        '<button type="button" class="orb" data-orb="1" aria-label="Talk to Muse"><span class="ball"></span>' + MIC + STOP + '</button>' +
+        field('q') + '<button type="button" class="type-btn" data-open="1">Type</button></div></div>' +
+      '<div class="sheet" id="sheet"><div class="top">Ask Muse<button type="button" data-close="1">Done</button></div>' + field('q2') + '<div id="chips2"></div></div>';
+    built = true; cache = {};
+  }
+  function render(){
+    if (!built) build();
+    var app = document.getElementById('app');
+    var m = mode(), st = statusLine();
+    var cls = m === 'idle' ? '' : m;
+    if (app.className !== cls) app.className = cls;
+    region('head', '<div class="mark"><i>Muse</i></div><div class="state' + (st.cls ? ' ' + st.cls : '') + '" role="status"><b></b><span>' + esc(st.text) + '</span></div>' +
+      '<button type="button" class="voice-toggle" data-voice="1" aria-pressed="' + aloud + '" title="Read answers out loud">' + SPK + '<span class="lbl">' + (aloud ? 'Voice on' : 'Voice off') + '</span></button>');
+    var conv;
+    if (!api.ready()){
+      conv = '<div class="hello"><h2>Almost ready</h2><p>Paste the bridge address and wall key into this widget’s Plugin Options. The Muse Link page in Home Assistant shows both.</p></div>';
+    } else if (!turns.length){
+      conv = '<div class="hello"><h2>What can I do for you?</h2><p>Tap the orb and talk, or type below.</p></div>';
+    } else {
+      conv = turns.map(function(t, i){
+        var last = i === turns.length - 1, text = replyText(t);
+        var you = t.voiceSecs ? MICS + (t.heard ? esc(t.heard) : 'Voice request <span class="len">' + clock(t.voiceSecs) + '</span>') : esc(t.you);
+        var writing = t.state === 'answering' || (t.replies || []).some(function(r){ return !r.done; });
+        var body = text ? '<div class="reply' + (writing ? ' typing' : '') + '">' + esc(text) + '</div>'
+          : (t.state === 'done' ? '<div class="reply waiting">Muse finished without a written answer. Check the Muse app.</div>' : '');
+        return '<div class="turn' + (last ? '' : ' old') + '"><div class="you">' + you + '</div>' + body +
+          (t.error ? '<div class="oops">' + esc(t.error) + '</div>' : '') +
+          (t.note ? '<div class="oops">' + esc(t.note) + '</div>' : '') +
+          (last && asks(t) && !current ? '<div class="answer"><button type="button" class="yes" data-answer="yes">Yes</button><button type="button" data-answer="no">No</button></div>' : '') +
+          (last && needsApproval(t) ? '<div class="flag">' + PHONE + 'Approve it in the Muse app</div>' : '') + '</div>';
+      }).join('');
+    }
+    var talk = document.getElementById('talk'), count = turns.length;
+    if (region('talk', conv) && count){
+      // Keep the start of the newest request in view while its answer fills in
+      var lastEl = talk.lastElementChild;
+      if (lastEl) talk.scrollTop = Math.max(0, lastEl.offsetTop - 2);
+    }
+    var list = buttons();
+    var chips = list.length ? '<div class="chips">' + list.map(function(c, i){ return '<button type="button" data-chip="' + i + '">' + esc(c.label) + '</button>'; }).join('') + '</div>' : '';
+    region('chips1', chips); region('chips2', chips);
+    var blocked = m === 'busy' || m === 'listening' || !api.ready();
+    Array.prototype.forEach.call(document.querySelectorAll('.send'), function(b){ if (b.disabled !== blocked) b.disabled = blocked; });
+    var orb = document.querySelector('.orb');
+    var orbOff = m === 'busy' || !api.ready();
+    if (orb.disabled !== orbOff) orb.disabled = orbOff;
+    orb.setAttribute('aria-label', m === 'listening' ? 'Stop and send' : m === 'speaking' ? 'Stop talking' : 'Talk to Muse');
+    var sheet = document.getElementById('sheet');
+    if (sheet.classList.contains('open') !== sheetOpen) sheet.classList.toggle('open', sheetOpen);
+  }
+  function clock(s){ s = Math.max(1, Math.round(s)); return Math.floor(s / 60) + ':' + ('0' + (s % 60)).slice(-2); }
+
+  // ---------- Asking ----------
+  function addTurn(t){ turns.push(t); while (turns.length > 6) turns.shift(); }
+  function begin(t, request){
+    stopSpeaking(); sheetOpen = false; problem = null;
+    t.state = 'sending'; t.replies = []; t.activity = ''; t.speak = aloud;
+    addTurn(t); current = t; render();
+    request.then(function(snap){ t.id = snap.id; merge(t, snap); follow(t); }, function(e){
+      current = null; t.state = 'error'; t.error = e.message; render();
+    });
+  }
+  function send(text){
+    text = clean(text); if (!text) return;
+    if (!api.ready()) return flash('Set up the bridge in Plugin Options first');
+    if (current || listening) return flash('Muse is still answering');
+    ['q', 'q2'].forEach(function(id){ var el = document.getElementById(id); if (el) el.value = ''; });
+    begin({you: text}, api.askText(text, aloud));
+  }
+  function merge(t, s){
+    t.state = s.state; t.activity = s.activity || ''; t.replies = s.replies || []; t.error = s.error || ''; t.note = s.note || '';
+    t.museVoice = !!s.speak;
+    if (s.heard) t.heard = s.heard;
+  }
+  function follow(t){
+    var misses = 0;
+    (function poll(){
+      if (t.state === 'done' || t.state === 'error') return settle(t);
+      setTimeout(function(){
+        api.turn(t.id).then(function(s){ misses = 0; merge(t, s); queueSpeech(t); render(); poll(); }, function(e){
+          if (++misses < 6) return setTimeout(poll, 1500);
+          t.state = 'error'; t.error = e.message; settle(t);
+        });
+      }, api.pollMs);
+    })();
+  }
+  function settle(t){ if (current === t) current = null; queueSpeech(t); render(); }
+  function reply(yes){
+    var t = lastTurn(); if (!t || current) return;
+    t.answered = true;
+    send(yes ? 'Yes' : 'No');
+  }
+
+  // ---------- Muse's voice ----------
+  var spoken = {}, queue = [], audio = null;
+  function queueSpeech(t){
+    if (!t.speak || !aloud) return;
+    (t.replies || []).forEach(function(r){
+      var k = t.id + '/' + r.id;
+      if (r.done && r.text && !spoken[k]){ spoken[k] = true; queue.push({t: t, r: r}); }
+    });
+    if (!speakingNow) playNext();
+  }
+  function playNext(){
+    var item = queue.shift();
+    if (!item || !aloud){ speakingNow = false; render(); return; }
+    speakingNow = true; render();
+    var url = item.t.museVoice ? api.speechUrl(item.t.id, item.r.id) : null;
+    if (!url) return sayWithBrowser(item.r.text);
+    audio = new Audio(url);
+    audio.onended = function(){ audio = null; playNext(); };
+    audio.onerror = function(){ audio = null; sayWithBrowser(item.r.text); };
+    var p = audio.play();
+    if (p && p.catch) p.catch(function(){ if (audio){ audio = null; sayWithBrowser(item.r.text); } });
+  }
+  var voices = [];
+  function loadVoices(){ try { voices = speechSynthesis.getVoices() || []; } catch(e){ voices = []; } }
+  if ('speechSynthesis' in window){ loadVoices(); try { speechSynthesis.addEventListener('voiceschanged', loadVoices); } catch(e){} }
+  function pickVoice(){
+    var want = clean(settings.voiceName).toLowerCase(), i, found;
+    if (want) for (i = 0; i < voices.length; i++) if (voices[i].name.toLowerCase().indexOf(want) >= 0) return voices[i];
+    var en = voices.filter(function(v){ return /^en([-_]|$)/i.test(v.lang); });
+    var us = en.filter(function(v){ return /us$/i.test(v.lang); });
+    var tests = [/natural/i, /google us english/i, /online/i, /google/i, /./];
+    for (i = 0; i < tests.length; i++){
+      found = us.filter(function(v){ return tests[i].test(v.name); })[0] || en.filter(function(v){ return tests[i].test(v.name); })[0];
+      if (found) return found;
+    }
+    return null;
+  }
+  function speakable(text){
+    return tidy(text).replace(/https?:\/\/\S+/g, 'the link').replace(/\u2022\s*/g, '').replace(/([.!?:;,])?\s*\n+\s*/g, function(m, p){ return p ? p + ' ' : '. '; });
+  }
+  var sayToken = 0;
+  function sayWithBrowser(text){
+    if (!('speechSynthesis' in window)) return playNext();
+    var parts = speakable(text).match(/[^.!?]+[.!?]*["')]*\s*|.+$/g) || [], pieces = [], cur = '';
+    parts.forEach(function(p){ if ((cur + p).length > 220 && cur){ pieces.push(cur); cur = p; } else cur += p; });
+    if (clean(cur)) pieces.push(cur);
+    var token = ++sayToken, voice = pickVoice();
+    try { speechSynthesis.cancel(); } catch(e){}
+    (function next(){
+      if (token !== sayToken || !speakingNow) return;
+      var piece = pieces.shift();
+      if (!piece) return playNext();
+      try {
+        var u = new SpeechSynthesisUtterance(piece), done = false;
+        var finish = function(){ if (done) return; done = true; clearTimeout(guard); next(); };
+        // Chrome sometimes never reports the end of a sentence; don't wait forever
+        var guard = setTimeout(finish, 4000 + piece.length * 110);
+        if (voice){ u.voice = voice; u.lang = voice.lang; }
+        u.onend = u.onerror = finish;
+        speechSynthesis.speak(u);
+      } catch(e){ playNext(); }
+    })();
+  }
+  function stopSpeaking(){
+    queue = [];
+    if (audio){ var a = audio; audio = null; try { a.pause(); a.removeAttribute('src'); a.load(); } catch(e){} }
+    sayToken++;
+    if ('speechSynthesis' in window) try { speechSynthesis.cancel(); } catch(e){}
+    if (speakingNow){ speakingNow = false; }
+  }
+
+  // ---------- The microphone ----------
+  var rec = null;
+  var MAX_SECONDS = 58, QUIET_AFTER_MS = 1500, NOTHING_HEARD_MS = 7000, RATE = 16000;
+  function startListening(){
+    if (!api.ready()) return flash('Set up the bridge in Plugin Options first');
+    if (!window.isSecureContext || !navigator.mediaDevices || !navigator.mediaDevices.getUserMedia)
+      return flash('The browser keeps the mic off at this address. See "Turn on the microphone" in the guide.');
+    stopSpeaking(); sheetOpen = false; listening = true; render();
+    navigator.mediaDevices.getUserMedia({audio: {channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true}}).then(function(stream){
+      if (!listening){ stream.getTracks().forEach(function(tr){ tr.stop(); }); return; }
+      var Ctx = window.AudioContext || window.webkitAudioContext, ctx = new Ctx();
+      var source = ctx.createMediaStreamSource(stream), proc = ctx.createScriptProcessor(4096, 1, 1);
+      var r = rec = {stream: stream, ctx: ctx, proc: proc, chunks: [], frames: 0, rate: ctx.sampleRate,
+                     started: Date.now(), floor: null, floorSamples: [], heardAt: 0, voiced: false};
+      proc.onaudioprocess = function(e){
+        if (rec !== r) return;
+        var data = e.inputBuffer.getChannelData(0), sum = 0;
+        for (var i = 0; i < data.length; i++) sum += data[i] * data[i];
+        var rms = Math.sqrt(sum / data.length), now = Date.now();
+        r.chunks.push(new Float32Array(data)); r.frames += data.length;
+        if (r.floor === null){ r.floorSamples.push(rms); if (now - r.started > 400){ r.floor = Math.min.apply(null, r.floorSamples); } }
+        var loud = rms > Math.max(0.012, (r.floor || 0.004) * 3);
+        if (loud){ r.voiced = true; r.heardAt = now; }
+        var ball = document.querySelector('.orb .ball');
+        if (ball) ball.style.setProperty('--lvl', Math.min(1, rms * 12).toFixed(2));
+        if (r.voiced && now - r.heardAt > QUIET_AFTER_MS) stopListening(true);
+        else if (!r.voiced && now - r.started > NOTHING_HEARD_MS) stopListening(false, 'I didn’t hear anything. Tap the orb and try again.');
+        else if (r.frames / r.rate > MAX_SECONDS) stopListening(true);
+      };
+      source.connect(proc); proc.connect(ctx.destination);
+    }, function(err){
+      listening = false; render();
+      flash(err && err.name === 'NotAllowedError' ? 'The browser blocked the mic. Allow it for this page and try again.'
+        : err && err.name === 'NotFoundError' ? 'No microphone found. Plug it in and try again.'
+        : 'The microphone wouldn’t start.');
+    });
+  }
+  function stopListening(sendIt, why){
+    var r = rec; rec = null; listening = false;
+    if (!r){ render(); if (why) flash(why); return; }
+    try { r.proc.disconnect(); } catch(e){}
+    r.stream.getTracks().forEach(function(tr){ tr.stop(); });
+    try { r.ctx.close(); } catch(e){}
+    var secs = r.frames / r.rate;
+    if (!sendIt || !r.voiced || secs < 0.5){ render(); flash(why || 'I didn’t catch that. Tap the orb and try again.'); return; }
+    begin({voiceSecs: secs}, api.askVoice(wav(r.chunks, r.rate), aloud));
+  }
+  function wav(chunks, rate){
+    var total = 0; chunks.forEach(function(c){ total += c.length; });
+    var all = new Float32Array(total), at = 0;
+    chunks.forEach(function(c){ all.set(c, at); at += c.length; });
+    var ratio = rate / RATE, n = Math.floor(total / ratio), pcm = new Int16Array(n);
+    for (var i = 0; i < n; i++){
+      var from = Math.floor(i * ratio), to = Math.min(total, Math.floor((i + 1) * ratio)), s = 0;
+      for (var j = from; j < to; j++) s += all[j];
+      var v = to > from ? s / (to - from) : all[from] || 0;
+      pcm[i] = Math.max(-32768, Math.min(32767, Math.round(v * 32767)));
+    }
+    var buf = new ArrayBuffer(44 + pcm.length * 2), d = new DataView(buf);
+    function str(o, s){ for (var k = 0; k < s.length; k++) d.setUint8(o + k, s.charCodeAt(k)); }
+    str(0, 'RIFF'); d.setUint32(4, 36 + pcm.length * 2, true); str(8, 'WAVE'); str(12, 'fmt ');
+    d.setUint32(16, 16, true); d.setUint16(20, 1, true); d.setUint16(22, 1, true); d.setUint32(24, RATE, true);
+    d.setUint32(28, RATE * 2, true); d.setUint16(32, 2, true); d.setUint16(34, 16, true); str(36, 'data');
+    d.setUint32(40, pcm.length * 2, true);
+    new Int16Array(buf, 44).set(pcm);
+    return new Blob([buf], {type: 'audio/wav'});
+  }
+
+  // ---------- Taps ----------
+  document.addEventListener('submit', function(e){
+    e.preventDefault();
+    var input = e.target.querySelector('input'); if (input) send(input.value);
+  });
+  document.addEventListener('click', function(e){
+    var b = e.target.closest('button'); if (!b || b.getAttribute('type') === 'submit' || b.disabled) return;
+    var d = b.dataset;
+    if (d.orb){
+      if (listening) stopListening(true);
+      else if (speakingNow){ stopSpeaking(); render(); }
+      else if (!current) startListening();
+    }
+    else if (d.answer){ reply(d.answer === 'yes'); }
+    else if (d.chip){
+      var c = buttons()[+d.chip]; if (!c) return;
+      if (c.send) return send(c.send);
+      var inline = document.getElementById('q');
+      if (!inline || !inline.offsetParent) sheetOpen = true;
+      render();
+      var el = document.getElementById(sheetOpen ? 'q2' : 'q'); if (el){ el.value = c.type; el.focus(); }
+    }
+    else if (d.voice){
+      aloud = !aloud; if (!aloud){ stopSpeaking(); }
+      if (live) HomeGlow.settings.set({voice: aloud}).catch(function(){});
+      render();
+    }
+    else if (d.open){ sheetOpen = true; render(); var q2 = document.getElementById('q2'); if (q2) q2.focus(); }
+    else if (d.close){ sheetOpen = false; render(); }
+  });
+
+  // ---------- Theme (the SDK does this too; this covers a direct load) ----------
+  var th = new URLSearchParams(location.search).get('theme');
+  if (th === 'dark' || th === 'light') document.documentElement.setAttribute('data-theme', th);
+  else if (!live && window.matchMedia && matchMedia('(prefers-color-scheme: dark)').matches) document.documentElement.setAttribute('data-theme', 'dark');
+  window.addEventListener('message', function(e){
+    var msg = e.data;
+    if (!msg || msg.type !== 'homeglow:theme') return;
+    if (msg.theme === 'dark' || msg.theme === 'light') document.documentElement.setAttribute('data-theme', msg.theme);
+    if (msg.colors && msg.colors.accent) document.documentElement.style.setProperty('--accent', msg.colors.accent);
+  });
+
+  // ---------- Start ----------
+  function checkConnection(){
+    if (document.hidden || !api.ready()) return;
+    api.status().then(function(s){ var was = connected; connected = !!s.connected; if (was !== connected) render(); },
+      function(){ var was = connected; connected = false; if (was !== false) render(); });
+  }
+  function loadSettings(){
+    if (!live) return Promise.resolve();
+    return HomeGlow.settings.get().then(function(s){ settings = Object.assign({}, DEFAULTS, s || {}); aloud = settings.voice !== false; }).catch(function(){});
+  }
+  loadSettings().then(function(){ render(); checkConnection(); });
+  setInterval(checkConnection, 20000);
+  setInterval(function(){ if (!current && !listening) loadSettings().then(render); }, 60000);
+  document.addEventListener('visibilitychange', checkConnection);
+  render();
+})();
+</script>
+</body>
+</html>
