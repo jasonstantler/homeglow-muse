@@ -4,5 +4,8 @@ configuration:
     description: >-
       From gadgets.muse.ai (Account, then SDK tokens). It starts with mgst_.
       Restart the add-on after changing it.
-network:
-  8791/tcp: The address the HomeGlow Muse card connects to.
+  bridge_port:
+    name: Wall card port
+    description: >-
+      The port on this Home Assistant machine that the HomeGlow Muse card
+      connects to. Change it only if something else already uses 8791.

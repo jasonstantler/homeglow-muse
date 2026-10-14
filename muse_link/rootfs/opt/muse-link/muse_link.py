@@ -31,11 +31,10 @@ DATA = os.environ.get("MUSE_LINK_DATA", "/data")
 HERE = os.path.dirname(os.path.abspath(__file__))
 os.environ.setdefault("MUSEGADGET_STATE_DIR", os.path.join(DATA, "musegadget"))
 os.environ.setdefault("MUSEGADGET_SOCKET", "/run/musegadget/musegadget.sock")
-BRIDGE_PORT = int(os.environ.get("MUSE_LINK_BRIDGE_PORT", "8791"))
-UI_PORT = int(os.environ.get("MUSE_LINK_UI_PORT", "8099"))
 INGRESS_PEERS = {"172.30.32.2", "127.0.0.1", "::1"}   # Home Assistant's ingress proxy (and local tests)
 PAIR_HELPER = os.environ.get("MUSE_LINK_PAIR_HELPER", os.path.join(HERE, "pair_helper.py"))
-VERSION = "1.1.0"
+VERSION = "1.2.0"
+CAP_NET_ADMIN, CAP_NET_RAW = 12, 13
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("muse-link")
@@ -63,6 +62,56 @@ OPTIONS = read_options()
 TOKEN = str(OPTIONS.get("sdk_token") or "").strip()
 if TOKEN:
     os.environ["MUSEGADGET_SDK_TOKEN"] = TOKEN
+
+
+def _port(env: str, option, default: int) -> int:
+    for value in (os.environ.get(env), option):
+        try:
+            if value not in (None, "") and 0 < int(value) < 65536:
+                return int(value)
+        except (TypeError, ValueError):
+            pass
+    return default
+
+
+# The add-on uses the host's network (Bluetooth sockets only exist there), so
+# these are ports on the Home Assistant machine itself.
+BRIDGE_PORT = _port("MUSE_LINK_BRIDGE_PORT", OPTIONS.get("bridge_port"), 8791)
+
+
+def drop_capabilities(*caps: int) -> bool:
+    """Give up Linux capabilities for this process and anything it starts.
+
+    The add-on gets network-admin only so pairing can borrow the Bluetooth
+    adapter; the pairing broker keeps it, and the rest of Muse Link (the part
+    on the network) drops it, along with Docker's default raw-socket one.
+    """
+    import ctypes
+
+    try:
+        libc = ctypes.CDLL(None, use_errno=True)
+    except OSError:
+        return False
+    pr_capbset_drop, pr_cap_ambient, pr_cap_ambient_lower = 24, 47, 3
+    for cap in caps:
+        libc.prctl(pr_cap_ambient, pr_cap_ambient_lower, cap, 0, 0)
+        libc.prctl(pr_capbset_drop, cap, 0, 0, 0)  # needs CAP_SETPCAP; harmless if refused
+
+    class Header(ctypes.Structure):
+        _fields_ = [("version", ctypes.c_uint32), ("pid", ctypes.c_int)]
+
+    class Data(ctypes.Structure):
+        _fields_ = [("effective", ctypes.c_uint32), ("permitted", ctypes.c_uint32), ("inheritable", ctypes.c_uint32)]
+
+    header, data = Header(0x20080522, 0), (Data * 2)()  # _LINUX_CAPABILITY_VERSION_3
+    if libc.capget(ctypes.byref(header), data) != 0:
+        return False
+    for cap in caps:
+        word, mask = cap // 32, ~(1 << (cap % 32)) & 0xFFFFFFFF
+        data[word].effective &= mask
+        data[word].permitted &= mask
+        data[word].inheritable &= mask
+    return libc.capset(ctypes.byref(header), data) == 0
 
 sys.path.insert(0, HERE)
 import bridge  # noqa: E402  (after the environment is set up)
@@ -106,81 +155,119 @@ def save_wall(cfg: dict) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Pairing with the Muse app, in its own process
+# Pairing with the Muse app, through the pairing broker (pair_helper.py --broker)
 
 
 class Pairing:
+    """Talks to the pairing broker, which keeps the Bluetooth permission this process gives up."""
+
     def __init__(self) -> None:
         self.state = "idle"        # idle | starting | open | paired | closed | failed
         self.name = ""
         self.until = 0.0
         self.problem = ""
         self.hint = ""             # "" | android: the app hung up after confirming, over a large MTU | dropped
-        self.proc: asyncio.subprocess.Process | None = None
+        self.borrowed = False      # Home Assistant's Bluetooth adapter is lent to pairing right now
+        self.running = False
+        self.broker: asyncio.subprocess.Process | None = None
 
     def snapshot(self) -> dict:
         left = max(0, int(self.until - time.time())) if self.state == "open" else 0
-        return {"state": self.state, "name": self.name, "seconds_left": left, "problem": self.problem, "hint": self.hint}
+        return {"state": self.state, "name": self.name, "seconds_left": left, "problem": self.problem,
+                "hint": self.hint, "borrowed": self.borrowed}
+
+    async def start_broker(self) -> None:
+        """Start the broker now, while this process still has the permission it hands down."""
+        self.broker = await asyncio.create_subprocess_exec(
+            sys.executable, PAIR_HELPER, "--broker",
+            stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=None, env=dict(os.environ),
+        )
+        asyncio.ensure_future(self._follow(self.broker))
+
+    async def _send(self, command: str) -> bool:
+        broker = self.broker
+        if broker is None or broker.returncode is not None or broker.stdin is None:
+            return False
+        try:
+            broker.stdin.write(command.encode() + b"\n")
+            await broker.stdin.drain()
+            return True
+        except (ConnectionError, OSError):
+            return False
 
     async def start(self) -> None:
-        if self.proc is not None:
+        if self.running:
             return
         self.state, self.name, self.problem, self.hint = "starting", "", "", ""
-        self.proc = await asyncio.create_subprocess_exec(
-            sys.executable, PAIR_HELPER,
-            stdout=asyncio.subprocess.PIPE, stderr=None, env=dict(os.environ),
-        )
-        asyncio.ensure_future(self._follow(self.proc))
-
-    async def _follow(self, proc) -> None:
-        try:
-            while True:
-                line = await proc.stdout.readline()
-                if not line:
-                    break
-                try:
-                    event = json.loads(line)
-                except ValueError:
-                    continue
-                if event.get("event") == "open":
-                    self.state, self.name = "open", str(event.get("name") or "")
-                    self.until = time.time() + int(event.get("timeout") or 600)
-                    log.info("pairing open: in the Muse app, add the device named %s", self.name)
-                elif event.get("event") == "dropped":
-                    # The Muse Android app writes (MTU - 3)-byte packets and fails above
-                    # 512 bytes. Home Assistant OS's BlueZ allows an MTU of 517, and an
-                    # add-on can't change that, so these phones stop right after consent.
-                    mtu = event.get("mtu") if isinstance(event.get("mtu"), int) else 0
-                    self.hint = "android" if mtu > 515 else "dropped"
-                    log.warning("the Muse app disconnected right after confirming pairing (ATT MTU %s)%s", mtu or "?",
-                                "; the Muse Android app can't pair at this MTU, so move a pairing here instead"
-                                if self.hint == "android" else "")
-                elif event.get("event") == "done":
-                    outcome = event.get("outcome")
-                    if outcome in ("paired", "already_paired"):
-                        self.state = "paired"
-                        log.info("paired with the Muse; connecting")
-                    elif outcome == "window_closed":
-                        self.state = "closed"
-                    else:
-                        self.state = "failed"
-                        self.problem = friendly_problem(event.get("problem") or outcome or "")
-                        log.warning("pairing failed: %s", event.get("problem") or outcome)
-            await proc.wait()
-            if self.state in ("starting", "open"):
-                self.state = "closed"
-        finally:
-            self.proc = None
+        self.running = True
+        if not await self._send("start"):
+            self.running = False
+            self.state = "failed"
+            self.problem = "Pairing stopped working. Restart the add-on and try again."
 
     def cancel(self) -> None:
-        if self.proc is not None and self.proc.returncode is None:
-            self.proc.terminate()
+        if self.running:
+            asyncio.ensure_future(self._send("cancel"))
+
+    async def _follow(self, broker) -> None:
+        while True:
+            line = await broker.stdout.readline()
+            if not line:
+                break
+            try:
+                event = json.loads(line)
+            except ValueError:
+                continue
+            self._handle(event)
+        await broker.wait()
+        log.warning("the pairing helper stopped; restart the add-on to pair")
+        self.running, self.borrowed = False, False
+        if self.state in ("starting", "open"):
+            self.state = "closed"
+
+    def _handle(self, event: dict) -> None:
+        kind = event.get("event")
+        if kind == "open":
+            self.state, self.name = "open", str(event.get("name") or "")
+            self.until = time.time() + int(event.get("timeout") or 600)
+            log.info("pairing open: in the Muse app, add the device named %s", self.name)
+        elif kind == "borrowed":
+            self.borrowed = True
+            log.info("Home Assistant's Bluetooth is paused while pairing is open")
+        elif kind == "returned":
+            self.borrowed = False
+        elif kind == "fallback":
+            log.warning("pairing through Home Assistant's Bluetooth instead (%s); Android phones may not finish",
+                        event.get("reason"))
+        elif kind == "dropped":
+            # The Muse Android app writes (MTU - 3)-byte packets and fails above
+            # 512 bytes; Home Assistant OS's BlueZ allows an MTU of 517.
+            mtu = event.get("mtu") if isinstance(event.get("mtu"), int) else 0
+            self.hint = "android" if mtu > 515 else "dropped"
+            log.warning("the Muse app disconnected right after confirming pairing (ATT MTU %s)", mtu or "?")
+        elif kind == "done":
+            outcome = event.get("outcome")
+            if outcome in ("paired", "already_paired"):
+                self.state = "paired"
+                log.info("paired with the Muse; connecting")
+            elif outcome == "window_closed":
+                self.state = "closed"
+            else:
+                self.state = "failed"
+                self.problem = friendly_problem(event.get("problem") or outcome or "")
+                log.warning("pairing failed: %s", event.get("problem") or outcome)
+        elif kind == "exit":
+            self.running, self.borrowed = False, False
+            if self.state in ("starting", "open"):
+                self.state = "closed"
 
 
 def friendly_problem(text: str) -> str:
     low = text.lower()
-    if "no bluetooth adapter" in low:
+    if "no bluetooth adapter" in low or "no_adapter" in low:
         return "This Home Assistant machine has no Bluetooth. Plug in a USB Bluetooth adapter, restart the add-on, and try again."
+    if "pairing stopped working" in low:
+        return text
     if "dbus" in low or "d-bus" in low:
         return "The add-on couldn't reach Bluetooth. Restart the add-on and try again."
     if "sdk token" in low or "invalid_sdk_token" in low:
@@ -232,11 +319,33 @@ def read_move_code(text: str) -> tuple[str, dict]:
     return mac, pairing
 
 
+def supervisor_get(path: str, method: str = "GET") -> dict:
+    """Call Home Assistant's Supervisor API (blocking)."""
+    token = os.environ.get("SUPERVISOR_TOKEN")
+    if not token:
+        raise RuntimeError("not running under the Supervisor")
+    req = urllib.request.Request("http://supervisor" + path, method=method,
+                                 headers={"Authorization": "Bearer " + token})
+    with urllib.request.urlopen(req, timeout=10) as resp:
+        return (json.load(resp) or {}).get("data") or {}
+
+
 def restart_self() -> None:
-    """Start over in place, so the gadget comes up as the moved identity."""
+    """Start over, so the gadget comes up as the moved identity.
+
+    Under Home Assistant the Supervisor restarts the add-on, which also gives
+    the pairing broker back the permission this process gave up; a plain
+    re-exec (local runs) would not.
+    """
     log.info("restarting Muse Link to use the moved pairing")
     for handler in logging.getLogger().handlers:
         handler.flush()
+    if os.environ.get("SUPERVISOR_TOKEN"):
+        try:
+            supervisor_get("/addons/self/restart", "POST")
+            return
+        except Exception as exc:
+            log.warning("couldn't ask Home Assistant to restart the add-on (%s); restarting in place", exc)
     os.execv(sys.executable, [sys.executable] + sys.argv)
 
 
@@ -292,7 +401,7 @@ class SetupPage:
         self.moving = True
         moved = identity.Identity(mac).ble_name
         log.info("moved a pairing here from another machine: this add-on is now %s", moved)
-        asyncio.get_running_loop().call_later(1.0, restart_self)
+        asyncio.get_running_loop().call_later(1.0, lambda: asyncio.ensure_future(asyncio.to_thread(restart_self)))
         return 200, dict(self.state(), device=moved)
 
     async def handle(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
@@ -337,25 +446,9 @@ class SetupPage:
                 pass
 
     async def learn_network(self) -> None:
-        """Ask the Supervisor which port Home Assistant gave the card, and this machine's address."""
-        token = os.environ.get("SUPERVISOR_TOKEN")
-        if not token:
-            return
-
-        def get(path):
-            req = urllib.request.Request("http://supervisor" + path, headers={"Authorization": "Bearer " + token})
-            with urllib.request.urlopen(req, timeout=5) as resp:
-                return json.load(resp).get("data") or {}
-
+        """Ask the Supervisor for this machine's address on the home network."""
         try:
-            info = await asyncio.to_thread(get, "/addons/self/info")
-            port = (info.get("network") or {}).get("%d/tcp" % BRIDGE_PORT)
-            if isinstance(port, int):
-                self.host_port = port
-        except Exception as exc:
-            log.info("couldn't read the add-on's port from the Supervisor: %s", exc)
-        try:
-            net = await asyncio.to_thread(get, "/network/info")
+            net = await asyncio.to_thread(supervisor_get, "/network/info")
             for iface in net.get("interfaces") or []:
                 if iface.get("primary") and (iface.get("ipv4") or {}).get("address"):
                     self.host_ip = iface["ipv4"]["address"][0].split("/")[0]
@@ -379,6 +472,23 @@ async def main() -> None:
     service = gadget_service.Service(identity=ident, executor=executor, sdk_token=TOKEN or None)
     pairing = Pairing()
 
+    # The broker keeps network-admin (for borrowing the Bluetooth adapter);
+    # everything else here, which talks to the network and to Muse, drops it.
+    await pairing.start_broker()
+    if drop_capabilities(CAP_NET_ADMIN, CAP_NET_RAW):
+        log.info("dropped network-admin; only the pairing helper keeps it")
+    else:
+        log.warning("couldn't drop network-admin from the main process")
+
+    ui_port, ui_host = _port("MUSE_LINK_UI_PORT", None, 0), "0.0.0.0"
+    try:
+        info = await asyncio.to_thread(supervisor_get, "/addons/self/info")
+        ui_port = ui_port or _port("", info.get("ingress_port"), 0)
+        ui_host = str(info.get("ip_address") or ui_host)
+    except Exception as exc:
+        log.info("couldn't read the ingress address from the Supervisor (%s); using defaults", exc)
+    ui_port = ui_port or 8099
+
     loop = asyncio.get_running_loop()
 
     def stop() -> None:
@@ -392,7 +502,12 @@ async def main() -> None:
     wall = bridge.Wall(service, cfg)
     setup = SetupPage(wall, pairing, ident.ble_name)
     web = await asyncio.start_server(wall.handle, "0.0.0.0", BRIDGE_PORT, limit=64 * 1024)
-    ui = await asyncio.start_server(setup.handle, "0.0.0.0", UI_PORT, limit=64 * 1024)
+    try:
+        # Only Home Assistant's own network: the setup page isn't for the rest of the house.
+        ui = await asyncio.start_server(setup.handle, ui_host, ui_port, limit=64 * 1024)
+    except OSError as exc:
+        log.warning("couldn't listen on %s:%d (%s); listening on all addresses", ui_host, ui_port, exc)
+        ui = await asyncio.start_server(setup.handle, "0.0.0.0", ui_port, limit=64 * 1024)
     asyncio.ensure_future(setup.learn_network())
     tasks = [asyncio.ensure_future(wall.subscribe_forever(service._stop)),
              asyncio.ensure_future(wall.tick_forever(service._stop))]

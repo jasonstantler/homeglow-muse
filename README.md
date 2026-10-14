@@ -17,8 +17,6 @@ This repository has two parts:
 
    Or go to **Settings → Add-ons → Add-on Store**, open the **⋮** menu, choose **Repositories**, and paste this page's address.
 2. **Install Muse Link** from the Add-on Store, then follow its **Documentation** tab: add your Muse SDK token, start it, and pair it with the Muse app from the Muse Link page.
-
-   With an **Android phone**, pair another Linux machine first, then move that pairing to Muse Link. The Muse Android app can't pair over Home Assistant OS's Bluetooth. The add-on's Documentation tab shows how.
 3. **Add the card to HomeGlow.** Download [`homeglow/muse-wall.html`](homeglow/muse-wall.html), upload it in HomeGlow under **Admin → Plugins**, and paste the bridge address and wall key from the Muse Link page into its Plugin Options.
 
 You need a Muse account, a Muse SDK token from [gadgets.muse.ai](https://gadgets.muse.ai/settings/sdk-tokens), and Bluetooth on the Home Assistant machine for the one-time pairing (built into a Raspberry Pi; otherwise a USB Bluetooth adapter).
@@ -33,4 +31,4 @@ Muse can't run commands or change files on the machine Muse Link runs on. Muse L
 
 ## Credits
 
-Built on Meta's [Muse Gadgets SDK](https://github.com/facebookincubator/muse-gadget-sdk) (Apache 2.0). Not made by or affiliated with Meta.
+Built on Meta's [Muse Gadgets SDK](https://github.com/facebookincubator/muse-gadget-sdk) and Google's [Bumble](https://github.com/google/bumble) (both Apache 2.0). Not made by or affiliated with Meta or Google.

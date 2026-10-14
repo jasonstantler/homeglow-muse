@@ -53,6 +53,7 @@ button:disabled{opacity:.5;cursor:default}
 .copyrow code{flex:1;min-width:0;padding:10px 12px;border-radius:10px;background:var(--soft);font:600 .95rem/1.3 var(--mono);overflow-x:auto;white-space:nowrap;user-select:all}
 .note{padding:10px 12px;border-radius:10px;background:var(--warnbg);color:var(--warn);font-weight:550}
 .hint{padding:10px 12px;border-radius:10px;background:var(--soft);font-weight:550}
+#pairIdle>p,#pairOpen>p{margin-top:10px}
 textarea{font:500 .82rem/1.35 var(--mono);color:var(--ink);background:var(--bg);border:1px solid var(--line);border-radius:10px;padding:10px 12px;width:100%;min-height:7.5em;resize:vertical}
 textarea:focus-visible{outline:2px solid var(--acc);outline-offset:1px}
 details>summary{cursor:pointer;font-weight:650;list-style-position:inside}
@@ -90,6 +91,7 @@ a{color:var(--acc)}
         <li>In the Muse app, turn on <b>Settings → Devices → Developer mode</b>.</li>
         <li>Click <b>Start pairing</b> below, then follow the steps that appear.</li>
       </ol>
+      <p class="muted">While pairing is open, Muse Link borrows this machine’s Bluetooth, so Home Assistant’s Bluetooth devices pause for a few minutes. They come back on their own.</p>
     </div>
     <div id="pairOpen" hidden>
       <div class="device"><span class="muted">In the Muse app, add the device named</span><span class="name" id="devName"></span><span class="time" id="devTime"></span></div>
@@ -99,6 +101,7 @@ a{color:var(--acc)}
         <li>Muse says it's a community device. Tap <b>Continue</b>.</li>
         <li>When it asks for Wi-Fi, pick the network it shows. No password is needed.</li>
       </ol>
+      <p class="hint" id="btPaused" hidden>Home Assistant’s Bluetooth is paused until pairing finishes.</p>
     </div>
     <p class="note" id="pairNote" hidden></p>
     <div class="btns">
@@ -111,7 +114,7 @@ a{color:var(--acc)}
     <details id="moveBox">
       <summary>Move a pairing here from another machine</summary>
       <div class="body">
-        <p class="muted">Already paired a Linux machine with Muse, like a Raspberry Pi or a virtual machine? Move that pairing here instead of pairing again. Use this if you have an Android phone: the Muse Android app can’t pair over Home Assistant OS’s Bluetooth.</p>
+        <p class="muted">Already running Muse on another Linux machine, like a Raspberry Pi or a virtual machine? Move that pairing here instead of pairing again. Muse Link becomes the same device in your Muse app.</p>
         <ol>
           <li>On the paired machine, run this command. It turns Muse off on that machine, because one pairing can only run in one place, and prints a code.
             <div class="copyrow" style="margin-top:6px"><code id="moveCmd">curl -fsSL https://raw.githubusercontent.com/jasonstantler/homeglow-muse/main/bridge/move-pairing.sh | sudo bash</code><button class="quiet" type="button" data-copy="moveCmd">Copy</button></div>
@@ -146,7 +149,7 @@ a{color:var(--acc)}
 <script>
 (function(){
   'use strict';
-  var st = null, showKey = false, timer = null, moving = false, moveOpened = false;
+  var st = null, showKey = false, timer = null, moving = false;
   function $(id){ return document.getElementById(id); }
   function call(method, path, data){
     var opts = {method: method, cache: 'no-store'};
@@ -182,10 +185,10 @@ a{color:var(--acc)}
     $('pairBtn').textContent = p.state === 'starting' ? 'Opening Bluetooth…' : (p.state === 'closed' || p.state === 'failed') ? 'Try again' : 'Start pairing';
     $('cancelBtn').hidden = !open;
     var note = p.state === 'failed' ? p.problem : p.state === 'closed' ? 'Pairing closed before the Muse app finished. Try again.' : '';
-    if (p.hint === 'android') note = 'Your phone hung up right after you tapped Continue. The Muse Android app can’t pair over Home Assistant OS’s Bluetooth. Pair another Linux machine instead and move that pairing here (below).';
-    else if (p.hint === 'dropped' && !note) note = 'Your phone hung up right after you tapped Continue. Try again. If it keeps happening, pair another Linux machine and move that pairing here (below).';
+    if (p.hint === 'android') note = 'Your phone hung up right after you tapped Continue. Muse Link couldn’t borrow this machine’s Bluetooth this time, and the Muse Android app can’t pair through Home Assistant’s own Bluetooth. Restart the add-on and try again. The Log tab says why.';
+    else if (p.hint === 'dropped' && !note) note = 'Your phone hung up right after you tapped Continue. Try again.';
     $('pairNote').hidden = !note; $('pairNote').textContent = note;
-    if (p.hint === 'android' && !moveOpened){ moveOpened = true; $('moveBox').open = true; }
+    $('btPaused').hidden = !p.borrowed;
 
     $('moveCard').hidden = st.connected && !(st.moving || moving);
     $('moveBtn').disabled = !!(st.moving || moving);
