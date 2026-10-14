@@ -52,6 +52,12 @@ button:disabled{opacity:.5;cursor:default}
 .copyrow{display:flex;gap:8px;min-width:0}
 .copyrow code{flex:1;min-width:0;padding:10px 12px;border-radius:10px;background:var(--soft);font:600 .95rem/1.3 var(--mono);overflow-x:auto;white-space:nowrap;user-select:all}
 .note{padding:10px 12px;border-radius:10px;background:var(--warnbg);color:var(--warn);font-weight:550}
+.hint{padding:10px 12px;border-radius:10px;background:var(--soft);font-weight:550}
+textarea{font:500 .82rem/1.35 var(--mono);color:var(--ink);background:var(--bg);border:1px solid var(--line);border-radius:10px;padding:10px 12px;width:100%;min-height:7.5em;resize:vertical}
+textarea:focus-visible{outline:2px solid var(--acc);outline-offset:1px}
+details>summary{cursor:pointer;font-weight:650;list-style-position:inside}
+details[open]>summary{margin-bottom:12px}
+details .body{display:flex;flex-direction:column;gap:12px}
 .confirm{display:none;gap:8px;align-items:center;flex-wrap:wrap}
 .confirm.show{display:flex}
 footer{color:var(--muted);font-size:.84rem;padding-inline:4px}
@@ -101,6 +107,25 @@ a{color:var(--acc)}
     </div>
   </section>
 
+  <section class="card" id="moveCard" hidden>
+    <details id="moveBox">
+      <summary>Move a pairing here from another machine</summary>
+      <div class="body">
+        <p class="muted">Already paired a Linux machine with Muse, like a Raspberry Pi or a virtual machine? Move that pairing here instead of pairing again. Use this if you have an Android phone: the Muse Android app can’t pair over Home Assistant OS’s Bluetooth.</p>
+        <ol>
+          <li>On the paired machine, run this command. It turns Muse off on that machine, because one pairing can only run in one place, and prints a code.
+            <div class="copyrow" style="margin-top:6px"><code id="moveCmd">curl -fsSL https://raw.githubusercontent.com/jasonstantler/homeglow-muse/main/bridge/move-pairing.sh | sudo bash</code><button class="quiet" type="button" data-copy="moveCmd">Copy</button></div>
+          </li>
+          <li>Copy everything from <b>BEGIN</b> to <b>END</b>, paste it below, and click <b>Move it here</b>.</li>
+        </ol>
+        <textarea id="moveCode" spellcheck="false" autocomplete="off" autocapitalize="off" aria-label="Pairing code" placeholder="-----BEGIN MUSE PAIRING-----&#10;…&#10;-----END MUSE PAIRING-----"></textarea>
+        <p class="note" id="moveNote" hidden></p>
+        <div class="btns"><button class="primary" id="moveBtn" type="button">Move it here</button></div>
+        <p class="muted">The code works like a password for your Muse. Don’t share it or post screenshots of it.</p>
+      </div>
+    </details>
+  </section>
+
   <section class="card" id="wallCard">
     <h2>Connect the HomeGlow card</h2>
     <p class="muted">In HomeGlow, upload <b>muse-wall.html</b> (Admin → Plugins), then paste these two into the Muse card's Plugin Options.</p>
@@ -121,10 +146,12 @@ a{color:var(--acc)}
 <script>
 (function(){
   'use strict';
-  var st = null, showKey = false, timer = null;
+  var st = null, showKey = false, timer = null, moving = false, moveOpened = false;
   function $(id){ return document.getElementById(id); }
-  function call(method, path){
-    return fetch(path, {method: method, cache: 'no-store'}).then(function(r){
+  function call(method, path, data){
+    var opts = {method: method, cache: 'no-store'};
+    if (data){ opts.body = JSON.stringify(data); opts.headers = {'Content-Type': 'application/json'}; }
+    return fetch(path, opts).then(function(r){
       return r.json().then(function(d){ if (!r.ok) throw new Error(d.error || 'That didn’t work.'); return d; });
     });
   }
@@ -136,9 +163,10 @@ a{color:var(--acc)}
   function render(){
     if (!st) return;
     var p = st.pairing, s = $('status'), text, more = '', cls = '';
-    if (st.token !== 'ok'){ text = st.token === 'missing' ? 'Needs your Muse SDK token' : 'The SDK token isn’t valid'; cls = 'warn'; more = 'See the steps below.'; }
-    else if (st.connected){ text = 'Connected to your Muse'; cls = 'ok'; more = 'The HomeGlow card can talk to Muse now.'; }
-    else if (st.paired){ text = 'Paired. Connecting to your Muse…'; cls = 'wait'; more = 'This can take up to a minute. If it stays here, check the add-on’s Log tab.'; }
+    if (st.moving || moving){ text = 'Moving the pairing here…'; cls = 'wait'; more = 'Muse Link is restarting as ' + (st.device || 'the moved device') + '. This takes a few seconds.'; }
+    else if (st.token !== 'ok'){ text = st.token === 'missing' ? 'Needs your Muse SDK token' : 'The SDK token isn’t valid'; cls = 'warn'; more = 'See the steps below.'; }
+    else if (st.connected){ text = 'Connected to your Muse'; cls = 'ok'; more = 'The HomeGlow card can talk to Muse now. In the Muse app, this is the device named ' + st.device + '.'; }
+    else if (st.paired){ text = 'Paired. Connecting to your Muse…'; cls = 'wait'; more = 'As ' + st.device + '. This can take up to a minute. If it stays here, check the add-on’s Log tab.'; }
     else if (p.state === 'open' || p.state === 'starting'){ text = 'Waiting for the Muse app…'; cls = 'wait'; }
     else { text = 'Not paired yet'; more = 'Pair once with the Muse app. After that it reconnects on its own, even after restarts.'; }
     s.className = 'status ' + cls; $('statusText').textContent = text; $('statusMore').textContent = more;
@@ -154,7 +182,14 @@ a{color:var(--acc)}
     $('pairBtn').textContent = p.state === 'starting' ? 'Opening Bluetooth…' : (p.state === 'closed' || p.state === 'failed') ? 'Try again' : 'Start pairing';
     $('cancelBtn').hidden = !open;
     var note = p.state === 'failed' ? p.problem : p.state === 'closed' ? 'Pairing closed before the Muse app finished. Try again.' : '';
+    if (p.hint === 'android') note = 'Your phone hung up right after you tapped Continue. The Muse Android app can’t pair over Home Assistant OS’s Bluetooth. Pair another Linux machine instead and move that pairing here (below).';
+    else if (p.hint === 'dropped' && !note) note = 'Your phone hung up right after you tapped Continue. Try again. If it keeps happening, pair another Linux machine and move that pairing here (below).';
     $('pairNote').hidden = !note; $('pairNote').textContent = note;
+    if (p.hint === 'android' && !moveOpened){ moveOpened = true; $('moveBox').open = true; }
+
+    $('moveCard').hidden = st.connected && !(st.moving || moving);
+    $('moveBtn').disabled = !!(st.moving || moving);
+    $('moveBtn').textContent = (st.moving || moving) ? 'Moving…' : 'Move it here';
 
     var host = st.ip || localHost();
     $('addr').textContent = 'http://' + (host || 'HOME-ASSISTANT-ADDRESS') + ':' + st.port;
@@ -163,9 +198,14 @@ a{color:var(--acc)}
     $('showKey').textContent = showKey ? 'Hide' : 'Show';
     $('ver').textContent = 'Version ' + st.version + '.';
     clearTimeout(timer);
-    timer = setTimeout(refresh, (p.state === 'open' || p.state === 'starting' || (st.paired && !st.connected)) ? 1500 : 5000);
+    timer = setTimeout(refresh, (moving || p.state === 'open' || p.state === 'starting' || (st.paired && !st.connected)) ? 1500 : 5000);
   }
-  function refresh(){ call('GET', 'api/state').then(function(d){ st = d; render(); }, function(){ clearTimeout(timer); timer = setTimeout(refresh, 5000); }); }
+  function refresh(){
+    call('GET', 'api/state').then(function(d){
+      if (moving && !d.moving){ moving = false; $('moveCode').value = ''; $('moveBox').open = false; }
+      st = d; render();
+    }, function(){ clearTimeout(timer); timer = setTimeout(refresh, moving ? 1500 : 5000); });
+  }
   function act(path){ return call('POST', path).then(function(d){ st = d; render(); }, function(e){ $('pairNote').hidden = false; $('pairNote').textContent = e.message; }); }
   function copy(text){
     function done(){ $('copied').hidden = false; setTimeout(function(){ $('copied').hidden = true; }, 1600); }
@@ -184,10 +224,19 @@ a{color:var(--acc)}
   $('newKey').addEventListener('click', function(){ $('confirmNew').classList.add('show'); });
   $('newKeyNo').addEventListener('click', function(){ $('confirmNew').classList.remove('show'); });
   $('newKeyYes').addEventListener('click', function(){ $('confirmNew').classList.remove('show'); showKey = true; act('api/new-key'); });
+  $('moveBtn').addEventListener('click', function(){
+    var code = $('moveCode').value;
+    $('moveNote').hidden = true;
+    if (!code.trim()){ $('moveNote').hidden = false; $('moveNote').textContent = 'Paste the code first.'; return; }
+    $('moveBtn').disabled = true;
+    call('POST', 'api/move', {code: code}).then(function(d){ moving = true; st = d; render(); }, function(e){
+      $('moveBtn').disabled = false; $('moveNote').hidden = false; $('moveNote').textContent = e.message;
+    });
+  });
   Array.prototype.forEach.call(document.querySelectorAll('[data-copy]'), function(b){
     b.addEventListener('click', function(){
       if (!st) return;
-      copy(b.dataset.copy === 'key' ? st.key : $('addr').textContent);
+      copy(b.dataset.copy === 'key' ? st.key : $(b.dataset.copy).textContent);
     });
   });
   refresh();

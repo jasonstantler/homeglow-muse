@@ -32,6 +32,16 @@ cd bridge && sudo bash install-bridge.sh
 
 It prints the **bridge address** and **wall key** to paste into the HomeGlow card's Plugin Options. Check it from another computer: `http://MACHINE-ADDRESS:8791/status` should say **Wrong wall key**.
 
+## Moving to the Home Assistant add-on
+
+To run Muse from Home Assistant instead, move this machine's pairing to the Muse Link add-on rather than pairing again:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/jasonstantler/homeglow-muse/main/bridge/move-pairing.sh | sudo bash
+```
+
+It turns Muse off here and prints a code. Paste it into **Move a pairing here from another machine** on the Muse Link page. Then point the HomeGlow card at the address and key Muse Link shows. Run `clear` afterwards: the code works like a password for your Muse.
+
 ## Managing it
 
 ```bash

@@ -5,7 +5,8 @@ One process runs three things:
   * Meta's Muse gadget service, which keeps this add-on connected to your Muse;
   * the wall bridge (bridge.py) on port 8791, which the HomeGlow card talks to;
   * the setup page, shown in Home Assistant's sidebar through ingress, for
-    pairing with the Muse app and copying the wall card's address and key.
+    pairing with the Muse app (or moving a pairing from another machine) and
+    copying the wall card's address and key.
 
 Muse cannot run commands or change files here: the add-on answers its health
 check and refuses everything else.
@@ -14,6 +15,8 @@ check and refuses everything else.
 from __future__ import annotations
 
 import asyncio
+import base64
+import binascii
 import json
 import logging
 import os
@@ -32,7 +35,7 @@ BRIDGE_PORT = int(os.environ.get("MUSE_LINK_BRIDGE_PORT", "8791"))
 UI_PORT = int(os.environ.get("MUSE_LINK_UI_PORT", "8099"))
 INGRESS_PEERS = {"172.30.32.2", "127.0.0.1", "::1"}   # Home Assistant's ingress proxy (and local tests)
 PAIR_HELPER = os.environ.get("MUSE_LINK_PAIR_HELPER", os.path.join(HERE, "pair_helper.py"))
-VERSION = "1.0.0"
+VERSION = "1.1.0"
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("muse-link")
@@ -112,16 +115,17 @@ class Pairing:
         self.name = ""
         self.until = 0.0
         self.problem = ""
+        self.hint = ""             # "" | android: the app hung up after confirming, over a large MTU | dropped
         self.proc: asyncio.subprocess.Process | None = None
 
     def snapshot(self) -> dict:
         left = max(0, int(self.until - time.time())) if self.state == "open" else 0
-        return {"state": self.state, "name": self.name, "seconds_left": left, "problem": self.problem}
+        return {"state": self.state, "name": self.name, "seconds_left": left, "problem": self.problem, "hint": self.hint}
 
     async def start(self) -> None:
         if self.proc is not None:
             return
-        self.state, self.name, self.problem = "starting", "", ""
+        self.state, self.name, self.problem, self.hint = "starting", "", "", ""
         self.proc = await asyncio.create_subprocess_exec(
             sys.executable, PAIR_HELPER,
             stdout=asyncio.subprocess.PIPE, stderr=None, env=dict(os.environ),
@@ -142,6 +146,15 @@ class Pairing:
                     self.state, self.name = "open", str(event.get("name") or "")
                     self.until = time.time() + int(event.get("timeout") or 600)
                     log.info("pairing open: in the Muse app, add the device named %s", self.name)
+                elif event.get("event") == "dropped":
+                    # The Muse Android app writes (MTU - 3)-byte packets and fails above
+                    # 512 bytes. Home Assistant OS's BlueZ allows an MTU of 517, and an
+                    # add-on can't change that, so these phones stop right after consent.
+                    mtu = event.get("mtu") if isinstance(event.get("mtu"), int) else 0
+                    self.hint = "android" if mtu > 515 else "dropped"
+                    log.warning("the Muse app disconnected right after confirming pairing (ATT MTU %s)%s", mtu or "?",
+                                "; the Muse Android app can't pair at this MTU, so move a pairing here instead"
+                                if self.hint == "android" else "")
                 elif event.get("event") == "done":
                     outcome = event.get("outcome")
                     if outcome in ("paired", "already_paired"):
@@ -176,13 +189,67 @@ def friendly_problem(text: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Moving a pairing from another machine (made there by bridge/move-pairing.sh)
+
+
+MOVE_BEGIN = "-----BEGIN MUSE PAIRING-----"
+MOVE_END = "-----END MUSE PAIRING-----"
+MAX_MOVE_CHARS = 32 * 1024
+
+
+class MoveError(ValueError):
+    pass
+
+
+def read_move_code(text: str) -> tuple[str, dict]:
+    """The gadget's MAC and its saved pairing, from a code made on another machine."""
+    text = str(text or "")
+    if len(text) > MAX_MOVE_CHARS:
+        raise MoveError("That's too long to be a pairing code.")
+    if MOVE_BEGIN in text:
+        text = text.split(MOVE_BEGIN, 1)[1]
+    text = text.split(MOVE_END, 1)[0]
+    compact = "".join(text.split())
+    if not compact:
+        raise MoveError("Paste the code first.")
+    try:
+        bundle = json.loads(base64.b64decode(compact + "=" * (-len(compact) % 4), validate=True))
+    except (binascii.Error, ValueError, UnicodeDecodeError):
+        raise MoveError("That isn't a whole pairing code. Copy everything from BEGIN to END and paste it again.")
+    if not isinstance(bundle, dict) or bundle.get("v") != 1:
+        raise MoveError("That isn't a pairing code from move-pairing.sh.")
+    mac = (bundle.get("identity") or {}).get("mac") if isinstance(bundle.get("identity"), dict) else None
+    pairing = bundle.get("pairing")
+    if not (isinstance(mac, str) and identity._MAC_RE.fullmatch(mac)):
+        raise MoveError("The code is missing the device's identity.")
+    if not (isinstance(pairing, dict)
+            and all(isinstance(pairing.get(k), str) and pairing.get(k) for k in ("access_token", "refresh_token"))
+            and all(isinstance(v, (str, int, float, bool)) or v is None for v in pairing.values())):
+        raise MoveError("The code is missing the pairing. Make sure that machine is paired with Muse.")
+    for key in ("api_url", "api_url_v2"):
+        if pairing.get(key) and not str(pairing[key]).startswith("https://"):
+            raise MoveError("The pairing in that code doesn't look right.")
+    return mac, pairing
+
+
+def restart_self() -> None:
+    """Start over in place, so the gadget comes up as the moved identity."""
+    log.info("restarting Muse Link to use the moved pairing")
+    for handler in logging.getLogger().handlers:
+        handler.flush()
+    os.execv(sys.executable, [sys.executable] + sys.argv)
+
+
+# ---------------------------------------------------------------------------
 # The setup page (Home Assistant's sidebar, through ingress)
 
 
 class SetupPage:
-    def __init__(self, wall: bridge.Wall, pairing: Pairing) -> None:
+    def __init__(self, wall: bridge.Wall, pairing: Pairing, device: str) -> None:
         self.wall = wall
         self.pairing = pairing
+        self.device = device
+        self.moving = False
         self.host_port = BRIDGE_PORT
         self.host_ip = ""
         with open(os.path.join(HERE, "setup.html"), "rb") as handle:
@@ -203,8 +270,30 @@ class SetupPage:
         return {
             "version": VERSION, "token": token_problem or "ok", "paired": paired,
             "connected": self.wall.session() is not None, "pairing": self.pairing.snapshot(),
+            "device": self.device, "moving": self.moving,
             "key": self.wall.key, "port": self.host_port, "ip": self.host_ip,
         }
+
+    async def move_here(self, body: bytes) -> tuple[int, dict]:
+        """Save a pairing made on another machine, then restart as that gadget."""
+        if self.moving:
+            return 409, {"error": "Already moving a pairing. Wait a moment."}
+        try:
+            code = (json.loads(body or b"{}") or {}).get("code")
+        except (ValueError, AttributeError):
+            code = None
+        try:
+            mac, record = read_move_code(code if isinstance(code, str) else "")
+        except MoveError as exc:
+            return 400, {"error": str(exc)}
+        self.pairing.cancel()
+        config.save_json(config.IDENTITY_FILE, {"mac": mac})
+        config.save_json(config.PAIRING_FILE, record)
+        self.moving = True
+        moved = identity.Identity(mac).ble_name
+        log.info("moved a pairing here from another machine: this add-on is now %s", moved)
+        asyncio.get_running_loop().call_later(1.0, restart_self)
+        return 200, dict(self.state(), device=moved)
 
     async def handle(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         peer = (writer.get_extra_info("peername") or ("",))[0]
@@ -212,7 +301,7 @@ class SetupPage:
             if peer not in INGRESS_PEERS:
                 return await bridge.respond(writer, 401, {"error": "Open Muse Link from Home Assistant's sidebar."})
             try:
-                method, target, _headers, _body = await asyncio.wait_for(bridge.read_request(reader), 15)
+                method, target, _headers, body = await asyncio.wait_for(bridge.read_request(reader), 15)
             except Exception:
                 return
             path = target.split("?", 1)[0].rstrip("/") or "/"
@@ -234,6 +323,9 @@ class SetupPage:
                 save_wall({"key": self.wall.key, "chat_id": self.wall.chat_id})
                 log.info("made a new wall key; the HomeGlow card needs the new one")
                 await bridge.respond(writer, 200, self.state())
+            elif method == "POST" and path == "/api/move":
+                status, data = await self.move_here(body)
+                await bridge.respond(writer, status, data)
             else:
                 await bridge.respond(writer, 404, {"error": "Not found."})
         except (ConnectionError, asyncio.CancelledError):
@@ -283,7 +375,8 @@ async def main() -> None:
     # Muse may only run the health check here.
     gadget_service.COMMAND_SPECS = {"device.health": gadget_service.COMMAND_SPECS["device.health"]}
     executor = bridge.WallOnlyExecutor(Account.current())
-    service = gadget_service.Service(identity=identity.load_or_create(), executor=executor, sdk_token=TOKEN or None)
+    ident = identity.load_or_create()
+    service = gadget_service.Service(identity=ident, executor=executor, sdk_token=TOKEN or None)
     pairing = Pairing()
 
     loop = asyncio.get_running_loop()
@@ -297,7 +390,7 @@ async def main() -> None:
 
     local = await service.serve_local(config.socket_path())
     wall = bridge.Wall(service, cfg)
-    setup = SetupPage(wall, pairing)
+    setup = SetupPage(wall, pairing, ident.ble_name)
     web = await asyncio.start_server(wall.handle, "0.0.0.0", BRIDGE_PORT, limit=64 * 1024)
     ui = await asyncio.start_server(setup.handle, "0.0.0.0", UI_PORT, limit=64 * 1024)
     asyncio.ensure_future(setup.learn_network())
@@ -308,7 +401,9 @@ async def main() -> None:
     if not TOKEN:
         log.warning("No SDK token yet: add it in the add-on's Configuration tab, then restart the add-on.")
     elif not config.load_json(config.PAIRING_FILE):
-        log.info("Not paired yet: open Muse Link in the sidebar and click Start pairing.")
+        log.info("Not paired yet: open Muse Link in the sidebar to pair, or to move a pairing from another machine.")
+    else:
+        log.info("Paired as %s.", ident.ble_name)
     try:
         await service.run()
     finally:
